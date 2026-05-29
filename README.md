@@ -90,3 +90,44 @@ await game.ptrStatus.markHeavyShift(actor);
 ## Notes
 
 The module deliberately keeps Mark, Coat, Seeded source-specific effects flexible. If a Seeded item has PTR persistent damage data, it is processed once per eligible round for bosses. Otherwise Seeded remains a tracked special condition for table rulings or source-specific automation.
+
+## Test Checklist
+
+- Open a world as GM and confirm the **PTR Status Afflictions** Item folder is created or refreshed.
+- Open the Token HUD **Assign Status Effects** menu and confirm Bleeding, Weakened, Provoked, Drowsy, and Chilled appear with icons.
+- Apply Frozen to a normal actor. Confirm it can still use Moves, receives linked Stuck and Vulnerable, and receives Weakened for 1 full round.
+- Remove Frozen. Confirm the linked Stuck from Frozen is removed.
+- Try dragging a Stuck token. Confirm movement is blocked and a chat/notification message appears.
+- Try dragging a Tripped token. Confirm movement is blocked and the message explains standing with a Shift Action and Attack of Opportunity risk from adjacent or Reach opponents.
+- Apply Weakened to a target and deal damage to it. Confirm incoming effectiveness is one step better.
+- Have a Weakened actor deal damage. Confirm its outgoing damage is treated as resisted one additional step.
+- Apply Sleep to a Boss Template. Confirm it becomes Drowsy, keeps actions, has halved evasion, and failed saves apply a -10 next Damage Roll effect.
+- Apply Frozen to a Boss Template. Confirm it becomes Chilled instead of Frozen and keeps actions.
+- Apply Provoked, Infatuation, or Seeded. Confirm the module asks for the linked scene actor.
+- With Provoked, attack a target that does not include the provoking actor and confirm -6 Accuracy appears.
+- With Infatuation, attack without the Crush and confirm -5 damage; attack the Crush and confirm the Attack/Special Attack contribution is reduced.
+- Run Burned, Poisoned, Badly Poisoned, Bleeding, Seeded, and weather/curse-like persistent damage against a Boss with multiple turns. Confirm loss triggers once per round, not once per boss turn.
+- Start a combatant turn with active managed afflictions. Confirm one compact chat card appears with expandable information and item links.
+
+## Changelog
+
+### 0.3.0
+
+- Frozen no longer blocks Move usage through PTR's original `condition:frozen` attack gate.
+- Frozen now creates linked Stuck and Vulnerable helpers; removing Frozen removes those linked helpers.
+- Added movement blocking for Stuck and Tripped with explanatory chat/notification messages.
+- Added scene-actor selection prompts for Seeded, Provoked, and Infatuation.
+- Provoked and Infatuation now add predicate-based Rule Elements tied to the selected actor UUID.
+- Weakened now includes Effectiveness Rule Elements for incoming attacks and outgoing resisted-step automation.
+- Status item descriptions now include Normal and Boss Template behavior.
+
+### 0.2.0
+
+- Replaced PTR's Token HUD status creation path for managed statuses.
+- Added local icons for Bleeding, Weakened, Provoked, Drowsy, and Chilled.
+- Added world Item creation in the **PTR Status Afflictions** folder.
+- Added compact turn-start chat summaries with expandable status information.
+
+### 0.1.0
+
+- Initial module release with normal and Boss Template status automation.

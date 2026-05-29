@@ -10,7 +10,14 @@ const FLAGS = {
 const DOT_SLUGS = new Set(["burned", "poisoned", "badly-poisoned", "bleeding", "seeded", "cursed"]);
 const SAVE_SLUGS = new Set(["sleep", "frozen", "drowsy", "chilled", "confused", "infatuation", "rage"]);
 const ACTION_GATE_SLUGS = new Set(["paralysis", "confused", "infatuation", "provoked", "suppressed", "flinch", "disabled", "drowsy", "chilled"]);
+const LINKED_SOURCE_SLUGS = new Set(["seeded", "provoked", "infatuation"]);
+const FREEZE_LINKED_HELPERS = new Set(["vulnerable", "stuck"]);
 const WORLD_ITEM_FOLDER = "PTR Status Afflictions";
+const TYPES = [
+  "Normal", "Fighting", "Flying", "Poison", "Ground", "Rock", "Bug", "Ghost", "Steel",
+  "Fire", "Water", "Grass", "Electric", "Psychic", "Ice", "Dragon", "Dark", "Fairy",
+  "Shadow", "Nuclear", "Untyped"
+];
 const ON_CREATE_HELPERS = new Map([
   ["frozen", ["vulnerable", "stuck", "weakened"]],
   ["chilled", ["weakened"]],
@@ -47,6 +54,9 @@ const CONDITION_DEFINITIONS = {
     name: "Frozen",
     img: "systems/ptu/static/images/conditions/Frozen.svg",
     persistent: { type: "save", dc: 16, decrease: false, formula: "" },
+    rules: [
+      { key: "RollOption", domain: "all", option: "condition:frozen" }
+    ],
     effect: "<p>Gains Vulnerable and Stuck. Save Check 16+ at end turn removes Frozen; Fire-Type lowers the DC to 11.</p>"
   },
   paralysis: {
@@ -64,6 +74,7 @@ const CONDITION_DEFINITIONS = {
     name: "Infatuation",
     img: "systems/ptu/static/images/conditions/Infatuated.svg",
     persistent: { type: "save", dc: 16, decrease: false, formula: "" },
+    sourcePrompt: "PTR_STATUS.Prompt.Crush",
     effect: "<p>The source is the Crush. Damage rolls not including the Crush suffer -5; against the Crush, Attack and Special Attack are halved for damage. Save Check 16+ removes it.</p>"
   },
   rage: {
@@ -93,6 +104,7 @@ const CONDITION_DEFINITIONS = {
   seeded: {
     name: "Seeded",
     img: "systems/ptu/static/images/conditions/Seeded.svg",
+    sourcePrompt: "PTR_STATUS.Prompt.SeededSource",
     effect: "<p>Special Mark/Coat condition. Its drain or loss is defined by the source. Boss drain/loss is limited to once per round.</p>"
   },
   cursed: {
@@ -109,12 +121,14 @@ const CONDITION_DEFINITIONS = {
     name: "Weakened",
     img: `modules/${MODULE_ID}/images/conditions/Weakened.svg`,
     duration: { value: 1, unit: "rounds", expiry: "turn-start" },
+    rules: TYPES.map((type) => ({ key: "Effectiveness", type, value: 2, label: "Weakened" })),
     effect: "<p>Damaging attacks are resisted one step more; attacks against this target are resisted one step less.</p>"
   },
   provoked: {
     name: "Provoked",
     img: `modules/${MODULE_ID}/images/conditions/Provoked.svg`,
     duration: { value: 1, unit: "rounds", expiry: "turn-start" },
+    sourcePrompt: "PTR_STATUS.Prompt.ProvokingActor",
     effect: "<p>Attacks that do not include the provoking combatant suffer -6 Accuracy, and non-crush accuracy modifiers cannot exceed 0.</p>"
   },
   drowsy: {
@@ -217,10 +231,15 @@ function patchPTR() {
 
   patchActorCreateEmbedded();
   patchActorGetRollOptions();
+  patchActorGetFilteredRollOptions();
+  patchActorGetSelfRollOptions();
   patchActorPrepareDerivedData();
+  patchActorApplyDamage();
   patchConditionTurnEnd();
   patchParalysisHandler();
   patchConditionFromEffects();
+  registerMovementHooks();
+  registerLinkedConditionCleanup();
 }
 
 function patchActorCreateEmbedded() {
@@ -233,10 +252,11 @@ function patchActorCreateEmbedded() {
     }
 
     const transformed = [];
-    const helperCreates = [];
+    const helperQueue = [];
     for (const datum of data) {
       if (datum?.type !== "condition") {
         transformed.push(datum);
+        helperQueue.push([]);
         continue;
       }
 
@@ -251,12 +271,28 @@ function patchActorCreateEmbedded() {
       }
 
       transformed.push(normalized.data);
-      for (const helperSlug of normalized.helpers) {
-        if (!hasCondition(this, helperSlug)) helperCreates.push(createConditionData(helperSlug));
-      }
+      helperQueue.push(normalized.helpers);
     }
 
     const created = transformed.length ? await original.call(this, embeddedName, transformed, context) : [];
+    const helperCreates = [];
+    for (let index = 0; index < created.length; index++) {
+      const parent = created[index];
+      if (parent?.type !== "condition") continue;
+      for (const helper of helperQueue[index] ?? []) {
+        const helperSlug = typeof helper === "string" ? helper : helper.slug;
+        if (!helperSlug || hasCondition(this, helperSlug)) continue;
+        const helperData = createConditionData(helperSlug, helper.overrides ?? {});
+        if (helper.linked) {
+          helperData.flags ??= {};
+          helperData.flags[MODULE_ID] ??= {};
+          helperData.flags[MODULE_ID].linkedTo = parent.id;
+          helperData.flags[MODULE_ID].linkedSlug = parent.slug;
+          helperData.system.references.parent = { id: parent.id, type: "condition" };
+        }
+        helperCreates.push(helperData);
+      }
+    }
     if (helperCreates.length) await original.call(this, embeddedName, helperCreates, context);
     return created;
   };
@@ -285,6 +321,16 @@ async function normalizeIncomingCondition(actor, data) {
   }
 
   data = mergeConditionDefaults(data, slug);
+  if (LINKED_SOURCE_SLUGS.has(slug) && !data.flags?.[MODULE_ID]?.linkedActor?.uuid) {
+    const linkedActor = await promptLinkedActor(actor, slug);
+    if (linkedActor) {
+      data.flags ??= {};
+      data.flags[MODULE_ID] ??= {};
+      data.flags[MODULE_ID].linkedActor = linkedActor;
+      data.system.effect = appendLinkedActorEffect(data.system.effect, linkedActor, slug);
+      data.system.rules = mergeLinkedActorRules(data.system.rules ?? [], slug, linkedActor, actor);
+    }
+  }
   if (isBoss && ACTION_GATE_SLUGS.has(slug)) {
     const assigned = findBossAssignedCombatant(actor);
     if (assigned) {
@@ -299,7 +345,10 @@ async function normalizeIncomingCondition(actor, data) {
     if (helperSlug !== "weakened") return true;
     if (isBoss && isWeakenedImmune(actor)) return false;
     return !hasCapability(actor, "Heater") && !hasCapability(actor, "heater");
-  });
+  }).map((helperSlug) => ({
+    slug: helperSlug,
+    linked: slug === "frozen" && FREEZE_LINKED_HELPERS.has(helperSlug)
+  }));
   return { data, helpers, blocked: false };
 }
 
@@ -311,11 +360,124 @@ function mergeConditionDefaults(data, slug) {
     return data;
   }
 
-  return foundry.utils.mergeObject(createConditionData(slug), data, { inplace: false, overwrite: true });
+  const merged = foundry.utils.mergeObject(createConditionData(slug), data, { inplace: false, overwrite: true });
+  merged.system.effect = fullStatusEffect(slug, definition.effect ?? "");
+  merged.system.rules = createConditionData(slug).system.rules;
+  return merged;
 }
 
 function blocked(label, reason) {
   return { blocked: true, label, reason, helpers: [] };
+}
+
+async function promptLinkedActor(targetActor, slug) {
+  const choices = getSceneActorChoices(targetActor);
+  if (!choices.length) return null;
+
+  const prompt = game.i18n.localize(CONDITION_DEFINITIONS[slug]?.sourcePrompt ?? "PTR_STATUS.Prompt.LinkedActor");
+  const content = `<form><div class="form-group"><label>${escapeHtml(prompt)}</label><select name="actor">${choices.map((choice) => `<option value="${escapeHtml(choice.uuid)}">${escapeHtml(choice.name)}</option>`).join("")}</select></div></form>`;
+
+  return new Promise((resolve) => {
+    new Dialog({
+      title: conditionLabel(slug),
+      content,
+      buttons: {
+        ok: {
+          label: game.i18n.localize("PTU.Action.Apply") || "Apply",
+          callback: (html) => {
+            const uuid = html.find("[name=actor]").val();
+            resolve(choices.find((choice) => choice.uuid === uuid) ?? null);
+          }
+        },
+        skip: {
+          label: game.i18n.localize("Cancel") || "Cancel",
+          callback: () => resolve(null)
+        }
+      },
+      default: "ok",
+      close: () => resolve(null)
+    }).render(true);
+  });
+}
+
+function getSceneActorChoices(targetActor) {
+  const scene = canvas?.scene ?? game.scenes?.active;
+  const choices = new Map();
+  for (const token of scene?.tokens?.contents ?? []) {
+    const actor = token.actor;
+    if (!actor || actor.id === targetActor?.id) continue;
+    choices.set(actor.uuid, {
+      uuid: actor.uuid,
+      id: actor.id,
+      name: token.name || actor.name,
+      tokenUuid: token.uuid
+    });
+  }
+  return Array.from(choices.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function appendLinkedActorEffect(effect, linkedActor, slug) {
+  const label = slug === "infatuation"
+    ? "Crush"
+    : slug === "provoked"
+      ? "Provoking Combatant"
+      : "Source";
+  return `${effect ?? ""}<p><strong>${escapeHtml(label)}:</strong> @UUID[${linkedActor.uuid}]{${escapeHtml(linkedActor.name)}}</p>`;
+}
+
+function mergeLinkedActorRules(rules, slug, linkedActor, actor) {
+  const targetId = linkedActor.id;
+  const targetUuid = linkedActor.uuid;
+  const targetPredicate = [`target:uuid:${targetUuid}`];
+  const notTargetPredicate = [{ not: `target:uuid:${targetUuid}` }];
+  const linkedRules = [];
+
+  if (slug === "provoked") {
+    linkedRules.push({
+      key: "FlatModifier",
+      selectors: ["attack"],
+      value: -6,
+      label: "Provoked",
+      predicate: notTargetPredicate
+    });
+  }
+
+  if (slug === "infatuation") {
+    linkedRules.push(
+      {
+        key: "FlatModifier",
+        selectors: ["damage"],
+        value: -5,
+        label: "Infatuation",
+        predicate: notTargetPredicate
+      },
+      {
+        key: "FlatModifier",
+        selectors: ["physical-damage"],
+        value: -Math.floor(Number(actor.system?.stats?.atk?.total ?? 0) / 2),
+        label: "Infatuation vs Crush",
+        predicate: targetPredicate
+      },
+      {
+        key: "FlatModifier",
+        selectors: ["special-damage"],
+        value: -Math.floor(Number(actor.system?.stats?.spatk?.total ?? 0) / 2),
+        label: "Infatuation vs Crush",
+        predicate: targetPredicate
+      }
+    );
+  }
+
+  if (slug === "seeded") {
+    linkedRules.push({
+      key: "RollOption",
+      domain: "all",
+      option: `condition:seeded:source:${targetId}`,
+      label: "Seeded Source"
+    });
+  }
+
+  return [...rules, ...linkedRules];
 }
 
 function patchActorGetRollOptions() {
@@ -336,6 +498,43 @@ function patchActorGetRollOptions() {
 
     const inactiveSet = new Set(inactive);
     return options.filter((option) => !inactiveSet.has(option));
+  };
+}
+
+function patchActorGetFilteredRollOptions() {
+  const ActorClass = CONFIG.PTU.Actor.documentClass;
+  const original = ActorClass.prototype.getFilteredRollOptions;
+
+  ActorClass.prototype.getFilteredRollOptions = function patchedGetFilteredRollOptions(prefix, domains = []) {
+    const options = original.call(this, prefix, domains);
+    if (!isEnabled() || prefix !== "condition") return options;
+    return options.filter((option) => option !== "condition:frozen");
+  };
+}
+
+function patchActorGetSelfRollOptions() {
+  const ActorClass = CONFIG.PTU.Actor.documentClass;
+  const original = ActorClass.prototype.getSelfRollOptions;
+
+  ActorClass.prototype.getSelfRollOptions = function patchedGetSelfRollOptions(prefix = "self") {
+    const options = original.call(this, prefix);
+    options.push(`${prefix}:uuid:${this.uuid}`);
+    return Array.from(new Set(options));
+  };
+}
+
+function patchActorApplyDamage() {
+  const ActorClass = CONFIG.PTU.Actor.documentClass;
+  const original = ActorClass.prototype.applyDamage;
+
+  ActorClass.prototype.applyDamage = async function patchedApplyDamage(params = {}) {
+    if (isEnabled() && params?.rollOptions) {
+      const options = params.rollOptions instanceof Set ? params.rollOptions : new Set(params.rollOptions);
+      if (options.has("origin:condition:weakened") && params.effectiveness !== -1) {
+        params = { ...params, rollOptions: options, effectiveness: (params.effectiveness ?? 1) * 0.5 };
+      }
+    }
+    return original.call(this, params);
   };
 }
 
@@ -408,6 +607,40 @@ function patchConditionFromEffects() {
     const originalItems = passthrough.length ? await original.call(this, passthrough) : [];
     return [...managed, ...originalItems];
   };
+}
+
+function registerMovementHooks() {
+  Hooks.on("preUpdateToken", (tokenDocument, changed, options) => {
+    if (!isEnabled() || options?.[MODULE_ID]?.ignoreStatusMovement) return true;
+    if (!("x" in changed || "y" in changed)) return true;
+
+    const actor = tokenDocument.actor;
+    if (!actor) return true;
+
+    if (hasCondition(actor, "stuck")) {
+      ui.notifications.warn(game.i18n.format("PTR_STATUS.Movement.Stuck", { actor: actor.name }));
+      post("PTR_STATUS.Movement.Stuck", { actor: actor.link }, actor);
+      return false;
+    }
+
+    if (hasCondition(actor, "tripped")) {
+      ui.notifications.warn(game.i18n.format("PTR_STATUS.Movement.Tripped", { actor: actor.name }));
+      post("PTR_STATUS.Movement.Tripped", { actor: actor.link }, actor);
+      return false;
+    }
+
+    return true;
+  });
+}
+
+function registerLinkedConditionCleanup() {
+  Hooks.on("deleteItem", async (item) => {
+    if (!isEnabled() || item?.type !== "condition" || !item.actor) return;
+    const linkedIds = item.actor.items
+      .filter((candidate) => candidate.type === "condition" && candidate.getFlag(MODULE_ID, "linkedTo") === item.id)
+      .map((candidate) => candidate.id);
+    if (linkedIds.length) await item.actor.deleteEmbeddedDocuments("Item", linkedIds);
+  });
 }
 
 async function handleManagedConditionTurnEnd(condition, options = {}) {
@@ -669,6 +902,7 @@ function createConditionData(slug, overrides = {}) {
       persistent: definition.persistent ?? null
     }
   };
+  data.system.effect = fullStatusEffect(normalized, definition.effect ?? data.system.effect);
   return foundry.utils.mergeObject(data, normalizeDocumentOverrides(overrides), { inplace: false, overwrite: true });
 }
 
@@ -694,6 +928,61 @@ function createEffectData(name, rules, overrides = {}) {
     }
   };
   return foundry.utils.mergeObject(data, normalizeDocumentOverrides(overrides), { inplace: false, overwrite: true });
+}
+
+function fullStatusEffect(slug, summary) {
+  const extra = {
+    burned: `
+      <h3>Normal</h3><ul><li>Persistent.</li><li>Defense -2 Combat Stages.</li><li>Lose 1 Tick at end turn after taking a Standard Action or being prevented from taking one.</li><li>No natural Save Check.</li></ul>
+      <h3>Boss Template</h3><ul><li>HP loss applies once per round only.</li><li>Damage affects the current HP Bar through PTR's normal boss HP handling.</li></ul>`,
+    poisoned: `
+      <h3>Normal</h3><ul><li>Persistent.</li><li>Special Defense -2 Combat Stages.</li><li>Lose 1 Tick at end turn after acting or being action-denied.</li><li>No natural Save Check.</li></ul>
+      <h3>Boss Template</h3><ul><li>HP loss applies once per round only.</li><li>Damage affects only the current HP Bar.</li></ul>`,
+    "badly-poisoned": `
+      <h3>Normal</h3><ul><li>Persistent.</li><li>Special Defense -2 Combat Stages.</li><li>HP loss starts at 5 HP and doubles each consecutive round: 5, 10, 20, 40.</li></ul>
+      <h3>Boss Template</h3><ul><li>HP loss applies once per round only.</li><li>Damage affects only the current HP Bar.</li></ul>`,
+    sleep: `
+      <h3>Normal</h3><ul><li>Volatile.</li><li>Save Check 16+ at end turn removes Sleep.</li><li>Damage from an active attack wakes the target; passive Burn/Poison damage does not.</li></ul>
+      <h3>Boss Template</h3><ul><li>Converted to Drowsy when applied.</li></ul>`,
+    frozen: `
+      <h3>Normal</h3><ul><li>Persistent.</li><li>The target gains Vulnerable and linked Stuck.</li><li>The target can still use Moves; this module removes PTR's original attack lock.</li><li>Weakened is applied for 1 full round unless the target has Heater.</li><li>Save Check 16+ at end turn removes Frozen. Fire-Type DC is 11. Sun grants +4 to the check; Hail/Snow applies -2.</li><li>Ice-Type targets are immune.</li></ul>
+      <h3>Boss Template</h3><ul><li>Converted to Chilled when applied.</li></ul>`,
+    paralysis: `
+      <h3>Normal</h3><ul><li>Persistent.</li><li>Save Check 11+ at start turn to act normally.</li><li>On failure, the target may take a Standard Action or a Shift Action, not both; it becomes Vulnerable for 1 full round.</li></ul>
+      <h3>Boss Template</h3><ul><li>Affects only the assigned boss Initiative Count.</li></ul>`,
+    confused: `
+      <h3>Normal</h3><ul><li>Volatile.</li><li>Cannot make Attacks of Opportunity.</li><li>When attacking, the PTR confusion check may damage the user after the attack.</li><li>Save Check 16+ at end turn removes Confused.</li></ul>
+      <h3>Boss Template</h3><ul><li>Affects only the assigned boss Initiative Count.</li></ul>`,
+    infatuation: `
+      <h3>Normal</h3><ul><li>Volatile.</li><li>Choose the Crush when applied.</li><li>Damage rolls that do not include the Crush suffer -5.</li><li>Against the Crush, Attack and Special Attack contribution to damage is halved by predicate rules.</li><li>Save Check 16+ at end turn removes Infatuation.</li></ul>
+      <h3>Boss Template</h3><ul><li>Affects only the assigned boss Initiative Count.</li></ul>`,
+    rage: `
+      <h3>Normal</h3><ul><li>Volatile.</li><li>Cannot use Status Moves.</li><li>Save Check 15+ at end turn removes Rage.</li></ul>
+      <h3>Boss Template</h3><ul><li>Affects only the assigned boss Initiative Count when relevant.</li></ul>`,
+    flinch: `
+      <h3>Normal</h3><ul><li>1 full round.</li><li>Applies Vulnerable and -5 Initiative.</li></ul>
+      <h3>Boss Template</h3><ul><li>Can affect only one Initiative Count and cannot remove multiple boss turns in one round.</li></ul>`,
+    suppressed: `
+      <h3>Normal</h3><ul><li>Usually 1 full round.</li><li>The target can only use At-Will Moves.</li></ul>
+      <h3>Boss Template</h3><ul><li>Affects only the assigned boss Initiative Count.</li></ul>`,
+    bleeding: `
+      <h3>Normal</h3><ul><li>Persistent.</li><li>Lose 1 Tick at end turn, or 2 Ticks if marked as heavy-shifted this round.</li><li>Healing received is halved manually while Bleeding is active.</li><li>Ghost-Type targets are immune.</li></ul>
+      <h3>Boss Template</h3><ul><li>Triggers once per round only, at the first eligible boss turn.</li><li>Damage affects only the current HP Bar.</li></ul>`,
+    weakened: `
+      <h3>Normal</h3><ul><li>Default duration: 1 full round.</li><li>Incoming attacks against this target are one effectiveness step better, implemented with Effectiveness Rule Elements.</li><li>Outgoing damage from a Weakened origin is resisted one additional step by automation during damage application.</li></ul>
+      <h3>Boss Template</h3><ul><li>Expires after 1 full round.</li><li>After expiry, the boss cannot become Weakened again for 3 full rounds.</li></ul>`,
+    provoked: `
+      <h3>Normal</h3><ul><li>Default duration: 1 full round.</li><li>Choose the Provoking Combatant when applied.</li><li>Attacks that do not include the provoking combatant suffer -6 Accuracy via predicate rules.</li></ul>
+      <h3>Boss Template</h3><ul><li>Affects only the assigned boss Initiative Count.</li></ul>`,
+    seeded: `
+      <h3>Normal</h3><ul><li>Special Mark/Coat condition.</li><li>Choose the source when applied.</li><li>Drain or loss depends on the source effect. Generic Persistent damage data is processed if present.</li></ul>
+      <h3>Boss Template</h3><ul><li>HP loss or drain applies once per round only and affects only the current HP Bar.</li></ul>`,
+    drowsy: `
+      <h3>Boss Template</h3><ul><li>Boss Sleep replacement.</li><li>The boss keeps its actions.</li><li>Evasion is halved by automation.</li><li>On a failed Save Check 16+, the boss suffers -10 to its next Damage Roll.</li><li>Taking damage does not automatically remove Drowsy.</li></ul>`,
+    chilled: `
+      <h3>Boss Template</h3><ul><li>Boss Frozen replacement.</li><li>The boss keeps its actions.</li><li>Evasion is halved by automation.</li><li>On a failed Save Check 16+, the boss suffers -10 to its next Damage Roll.</li><li>Weakened, if applied, lasts 1 full round and then triggers the 3-round boss cooldown.</li></ul>`
+  };
+  return `${summary ?? ""}${extra[slug] ?? ""}`;
 }
 
 function normalizeDocumentOverrides(overrides = {}) {
