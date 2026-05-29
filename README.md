@@ -12,6 +12,9 @@ https://raw.githubusercontent.com/marcbenoitcote-star/ptr1e-status-afflictions/m
 
 ## What it automates
 
+- Replaces PTR's HUD status-effect creation path for managed afflictions, so clicking **Assign Status Effects** creates this module's condition items instead of the original compendium versions.
+- Creates easy-access world Item documents in a **PTR Status Afflictions** folder for all managed afflictions.
+- Posts a compact clickable chat summary at the start of a combatant's turn when it has active managed afflictions.
 - Burned, Poisoned, Badly Poisoned, Bleeding, Seeded tick/drain timing.
 - Sleep, Frozen, Confused, Infatuation, Rage Save Checks.
 - Boss conversion: Sleep -> Drowsy and Frozen -> Chilled.
@@ -19,6 +22,20 @@ https://raw.githubusercontent.com/marcbenoitcote-star/ptr1e-status-afflictions/m
 - Boss action-denial assignment to one initiative count where the system exposes a current combatant.
 - Weakened duration and 3-round Boss cooldown.
 - Immunities for Ice-Type Frozen/Chilled and Ghost-Type Bleeding.
+
+## Status item access
+
+After the module is enabled and a GM loads the world, it creates or refreshes a world Item folder named:
+
+```text
+PTR Status Afflictions
+```
+
+Those Items can be dragged onto actors or used as references. The Token HUD **Assign Status Effects** menu is also patched so managed statuses use the module definitions directly.
+
+## Turn chat summary
+
+When an actor starts its turn and has active managed afflictions, the module posts one compact chat card. The card shows the active states as chips and contains collapsible sections for the full rules text plus an `@UUID` link to the condition Item.
 
 ## Install in Foundry VTT
 

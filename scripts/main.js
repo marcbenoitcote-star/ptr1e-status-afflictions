@@ -10,6 +10,7 @@ const FLAGS = {
 const DOT_SLUGS = new Set(["burned", "poisoned", "badly-poisoned", "bleeding", "seeded", "cursed"]);
 const SAVE_SLUGS = new Set(["sleep", "frozen", "drowsy", "chilled", "confused", "infatuation", "rage"]);
 const ACTION_GATE_SLUGS = new Set(["paralysis", "confused", "infatuation", "provoked", "suppressed", "flinch", "disabled", "drowsy", "chilled"]);
+const WORLD_ITEM_FOLDER = "PTR Status Afflictions";
 const ON_CREATE_HELPERS = new Map([
   ["frozen", ["vulnerable", "stuck", "weakened"]],
   ["chilled", ["weakened"]],
@@ -32,7 +33,7 @@ const CONDITION_DEFINITIONS = {
   },
   "badly-poisoned": {
     name: "Badly Poisoned",
-    img: "systems/ptu/static/images/conditions/Badly Poisoned.png",
+    img: "systems/ptu/static/images/conditions/Badly-Poisoned.svg",
     rules: [{ key: "ActiveEffectLike", path: "system.stats.spdef.stage.mod", mode: "add", value: -2 }],
     effect: "<p>Special Defense is lowered by 2 Combat Stages. Lose 5 HP, then double the loss each consecutive round.</p>"
   },
@@ -101,30 +102,30 @@ const CONDITION_DEFINITIONS = {
   },
   bleeding: {
     name: "Bleeding",
-    img: "icons/svg/blood.svg",
+    img: `modules/${MODULE_ID}/images/conditions/Bleeding.svg`,
     effect: "<p>Lose 1 Tick at end turn, or 2 Ticks after a heavy shift. Healing received is halved manually by the table.</p>"
   },
   weakened: {
     name: "Weakened",
-    img: "icons/svg/downgrade.svg",
+    img: `modules/${MODULE_ID}/images/conditions/Weakened.svg`,
     duration: { value: 1, unit: "rounds", expiry: "turn-start" },
     effect: "<p>Damaging attacks are resisted one step more; attacks against this target are resisted one step less.</p>"
   },
   provoked: {
     name: "Provoked",
-    img: "icons/svg/target.svg",
+    img: `modules/${MODULE_ID}/images/conditions/Provoked.svg`,
     duration: { value: 1, unit: "rounds", expiry: "turn-start" },
     effect: "<p>Attacks that do not include the provoking combatant suffer -6 Accuracy, and non-crush accuracy modifiers cannot exceed 0.</p>"
   },
   drowsy: {
     name: "Drowsy",
-    img: "systems/ptu/static/images/conditions/Sleep.svg",
+    img: `modules/${MODULE_ID}/images/conditions/Drowsy.svg`,
     persistent: { type: "save", dc: 16, decrease: false, formula: "" },
     effect: "<p>Boss Sleep replacement. Actions are retained, evasion is halved, and a failed save gives -10 to the next damage roll.</p>"
   },
   chilled: {
     name: "Chilled",
-    img: "systems/ptu/static/images/conditions/Frozen.svg",
+    img: `modules/${MODULE_ID}/images/conditions/Chilled.svg`,
     persistent: { type: "save", dc: 16, decrease: false, formula: "" },
     effect: "<p>Boss Frozen replacement. Actions are retained, evasion is halved, and a failed save gives -10 to the next damage roll.</p>"
   }
@@ -140,6 +141,10 @@ Hooks.once("ready", () => {
   registerStatusEffects();
   patchPTR();
   exposeApi();
+  registerTurnSummaryHook();
+  if (game.user.isGM && game.settings.get(MODULE_ID, "worldItems")) {
+    ensureWorldStatusItems();
+  }
   console.log(`${MODULE_ID} | Ready.`);
 });
 
@@ -168,6 +173,22 @@ function registerSettings() {
     type: Boolean,
     default: true
   });
+  game.settings.register(MODULE_ID, "turnSummary", {
+    name: "PTR_STATUS.Settings.TurnSummary.Name",
+    hint: "PTR_STATUS.Settings.TurnSummary.Hint",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true
+  });
+  game.settings.register(MODULE_ID, "worldItems", {
+    name: "PTR_STATUS.Settings.WorldItems.Name",
+    hint: "PTR_STATUS.Settings.WorldItems.Hint",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true
+  });
 }
 
 function registerStatusEffects() {
@@ -175,13 +196,15 @@ function registerStatusEffects() {
   if (!Array.isArray(statusEffects)) return;
 
   for (const [id, data] of Object.entries(CONDITION_DEFINITIONS)) {
-    if (statusEffects.some((effect) => effect.id === id)) continue;
-    statusEffects.push({
+    const replacement = {
       id,
-      name: data.name,
+      name: data.nameKey ?? data.name,
       img: data.img,
       changes: [{ key: `flags.ptu.is_${id.replaceAll("-", "_")}`, value: true, mode: 5, priority: 50 }]
-    });
+    };
+    const existing = statusEffects.find((effect) => effect.id === id);
+    if (existing) foundry.utils.mergeObject(existing, replacement, { inplace: true, overwrite: true });
+    else statusEffects.push(replacement);
   }
   CONFIG.statusEffects = statusEffects;
 }
@@ -197,6 +220,7 @@ function patchPTR() {
   patchActorPrepareDerivedData();
   patchConditionTurnEnd();
   patchParalysisHandler();
+  patchConditionFromEffects();
 }
 
 function patchActorCreateEmbedded() {
@@ -360,6 +384,32 @@ function patchParalysisHandler() {
   };
 }
 
+function patchConditionFromEffects() {
+  const ConditionClass = CONFIG.PTU.Item.documentClasses.condition;
+  const original = ConditionClass.FromEffects;
+  if (!(original instanceof Function)) return;
+
+  ConditionClass.FromEffects = async function patchedFromEffects(effects) {
+    if (!isEnabled()) return original.call(this, effects);
+
+    const managed = [];
+    const passthrough = [];
+    for (const effect of effects ?? []) {
+      const slug = sluggify(effect?.id ?? effect?.system?.slug ?? effect?.slug ?? effect?.name);
+      if (CONDITION_DEFINITIONS[slug]) {
+        managed.push(createConditionData(slug, {
+          system: { origin: slug }
+        }));
+      } else {
+        passthrough.push(effect);
+      }
+    }
+
+    const originalItems = passthrough.length ? await original.call(this, passthrough) : [];
+    return [...managed, ...originalItems];
+  };
+}
+
 async function handleManagedConditionTurnEnd(condition, options = {}) {
   const actor = condition.actor;
   const combatant = game.combat?.combatant;
@@ -489,6 +539,95 @@ async function applyFlatHpLoss(actor, amount, label) {
   await post("PTR_STATUS.Chat.Damage", { actor: actor.link, amount: oldHp - newHp, label }, actor);
 }
 
+function registerTurnSummaryHook() {
+  Hooks.on("ptu.startTurn", async (combatant) => {
+    if (!isEnabled() || !game.settings.get(MODULE_ID, "turnSummary")) return;
+    const actor = combatant?.actor;
+    if (!actor || actor.primaryUpdater && game.user !== actor.primaryUpdater) return;
+    await postTurnStatusSummary(actor);
+  });
+}
+
+async function postTurnStatusSummary(actor) {
+  const conditions = actor.conditions?.active
+    ?.filter((condition) => CONDITION_DEFINITIONS[condition.slug])
+    ?.sort((a, b) => a.name.localeCompare(b.name)) ?? [];
+  if (!conditions.length) return;
+
+  const title = game.i18n.format("PTR_STATUS.Chat.TurnSummaryTitle", { actor: actor.name });
+  const content = buildTurnSummaryHtml(title, conditions);
+
+  return ChatMessage.create({
+    speaker: ChatMessage.getSpeaker({ actor }),
+    content
+  });
+}
+
+function buildTurnSummaryHtml(title, conditions) {
+  const chips = conditions.map((condition) => `<span style="display:inline-flex;align-items:center;gap:4px;border:1px solid #999;border-radius:4px;padding:2px 6px;margin:2px;background:#f7f3e8;"><img src="${escapeHtml(condition.img)}" width="18" height="18" style="border:0;">${escapeHtml(condition.name)}</span>`).join("");
+  const details = conditions.map((condition) => {
+    const definition = CONDITION_DEFINITIONS[condition.slug] ?? {};
+    const body = condition.system?.effect || definition.effect || "";
+    const duration = describeDuration(condition);
+    return `<details style="margin-top:6px;">
+      <summary><strong>${escapeHtml(condition.name)}</strong>${duration ? ` <small>${escapeHtml(duration)}</small>` : ""}</summary>
+      <div style="margin:.35rem 0 .35rem .5rem;">${body}</div>
+      <p style="margin:.25rem 0 .25rem .5rem;">@UUID[${condition.uuid}]{${escapeHtml(game.i18n.localize("PTR_STATUS.Chat.OpenItem"))}}</p>
+    </details>`;
+  }).join("");
+
+  return `<section class="ptr-status-summary">
+    <h3>${escapeHtml(title)}</h3>
+    <div>${chips}</div>
+    ${details}
+  </section>`;
+}
+
+function describeDuration(condition) {
+  const duration = condition.system?.duration;
+  if (!duration) return "";
+  if (duration.unit === "unlimited") return "Persistent";
+  if (duration.unit === "encounter") return "Encounter";
+  if (duration.value) return `${duration.value} ${duration.unit}`;
+  return "";
+}
+
+async function ensureWorldStatusItems() {
+  const folder = await getOrCreateStatusFolder();
+  const creations = [];
+  const updates = [];
+
+  for (const slug of Object.keys(CONDITION_DEFINITIONS)) {
+    const data = createConditionData(slug);
+    data.folder = folder?.id ?? null;
+    data.flags ??= {};
+    data.flags[MODULE_ID] = { statusSlug: slug };
+
+    const existing = game.items.find((item) => item.getFlag(MODULE_ID, "statusSlug") === slug);
+    if (existing) {
+      updates.push({
+        _id: existing.id,
+        name: data.name,
+        img: data.img,
+        folder: data.folder,
+        system: data.system,
+        flags: foundry.utils.mergeObject(existing.flags ?? {}, data.flags, { inplace: false })
+      });
+    } else {
+      creations.push(data);
+    }
+  }
+
+  if (creations.length) await Item.createDocuments(creations);
+  if (updates.length) await Item.updateDocuments(updates);
+}
+
+async function getOrCreateStatusFolder() {
+  const existing = game.folders.find((folder) => folder.type === "Item" && folder.name === WORLD_ITEM_FOLDER);
+  if (existing) return existing;
+  return Folder.create({ name: WORLD_ITEM_FOLDER, type: "Item", sorting: "a" });
+}
+
 function exposeApi() {
   game.ptrStatus = {
     apply: async (actor, slug, options = {}) => actor?.createEmbeddedDocuments?.("Item", [createConditionData(slug, options)]),
@@ -530,7 +669,7 @@ function createConditionData(slug, overrides = {}) {
       persistent: definition.persistent ?? null
     }
   };
-  return foundry.utils.mergeObject(data, overrides, { inplace: false, overwrite: true });
+  return foundry.utils.mergeObject(data, normalizeDocumentOverrides(overrides), { inplace: false, overwrite: true });
 }
 
 function createEffectData(name, rules, overrides = {}) {
@@ -554,7 +693,27 @@ function createEffectData(name, rules, overrides = {}) {
       context: null
     }
   };
-  return foundry.utils.mergeObject(data, overrides, { inplace: false, overwrite: true });
+  return foundry.utils.mergeObject(data, normalizeDocumentOverrides(overrides), { inplace: false, overwrite: true });
+}
+
+function normalizeDocumentOverrides(overrides = {}) {
+  const normalized = foundry.utils.expandObject(overrides);
+  if (normalized.duration) {
+    normalized.system ??= {};
+    normalized.system.duration = normalized.duration;
+    delete normalized.duration;
+  }
+  if (normalized.persistent) {
+    normalized.system ??= {};
+    normalized.system.persistent = normalized.persistent;
+    delete normalized.persistent;
+  }
+  if (normalized.rules) {
+    normalized.system ??= {};
+    normalized.system.rules = normalized.rules;
+    delete normalized.rules;
+  }
+  return normalized;
 }
 
 function findBossAssignedCombatant(actor) {
