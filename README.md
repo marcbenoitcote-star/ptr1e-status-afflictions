@@ -7,7 +7,7 @@ Foundry VTT module for Pokemon Tabletop Reunited (`ptu`) that replaces the commo
 Use this manifest URL for Foundry VTT or Forge VTT:
 
 ```text
-https://raw.githubusercontent.com/marcbenoitcote-star/ptr1e-status-afflictions/main/module.json
+https://github.com/marcbenoitcote-star/ptr1e-status-afflictions/releases/latest/download/module.json
 ```
 
 ## What it automates
@@ -63,7 +63,7 @@ Extract the zip into Foundry's `Data/modules/ptr1e-status-afflictions` folder, t
 5. Paste the manifest URL:
 
 ```text
-https://raw.githubusercontent.com/marcbenoitcote-star/ptr1e-status-afflictions/main/module.json
+https://github.com/marcbenoitcote-star/ptr1e-status-afflictions/releases/latest/download/module.json
 ```
 
 6. Install the module.
@@ -110,6 +110,10 @@ The module deliberately keeps Mark, Coat, Seeded source-specific effects flexibl
 - Start a combatant turn with active managed afflictions. Confirm one compact chat card appears with expandable information and item links.
 
 ## Changelog
+
+### 0.3.2
+
+- Changed the recommended manifest to the GitHub latest-release `module.json` asset to avoid short GitHub Raw cache delays during Foundry/Forge updates.
 
 ### 0.3.1
 
