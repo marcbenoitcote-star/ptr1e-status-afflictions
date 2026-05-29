@@ -7,7 +7,7 @@
       "name": "Pokemon PTU Custom Server"
     }
   ],
-  "version": "0.3.0",
+  "version": "0.3.1",
   "url": "https://github.com/marcbenoitcote-star/ptr1e-status-afflictions",
   "manifest": "https://raw.githubusercontent.com/marcbenoitcote-star/ptr1e-status-afflictions/main/module.json",
   "download": "https://github.com/marcbenoitcote-star/ptr1e-status-afflictions/releases/latest/download/module.zip",

@@ -18,6 +18,18 @@ const TYPES = [
   "Fire", "Water", "Grass", "Electric", "Psychic", "Ice", "Dragon", "Dark", "Fairy",
   "Shadow", "Nuclear", "Untyped"
 ];
+
+function halfEvasionRules(label) {
+  return ["physical", "special", "speed"].map((path) => ({
+    key: "ActiveEffectLike",
+    mode: "multiply",
+    path: `system.evasion.${path}`,
+    value: 0.5,
+    phase: "afterDerived",
+    label
+  }));
+}
+
 const ON_CREATE_HELPERS = new Map([
   ["frozen", ["vulnerable", "stuck", "weakened"]],
   ["chilled", ["weakened"]],
@@ -135,12 +147,14 @@ const CONDITION_DEFINITIONS = {
     name: "Drowsy",
     img: `modules/${MODULE_ID}/images/conditions/Drowsy.svg`,
     persistent: { type: "save", dc: 16, decrease: false, formula: "" },
+    rules: halfEvasionRules("Drowsy"),
     effect: "<p>Boss Sleep replacement. Actions are retained, evasion is halved, and a failed save gives -10 to the next damage roll.</p>"
   },
   chilled: {
     name: "Chilled",
     img: `modules/${MODULE_ID}/images/conditions/Chilled.svg`,
     persistent: { type: "save", dc: 16, decrease: false, formula: "" },
+    rules: halfEvasionRules("Chilled"),
     effect: "<p>Boss Frozen replacement. Actions are retained, evasion is halved, and a failed save gives -10 to the next damage roll.</p>"
   }
 };
@@ -233,7 +247,6 @@ function patchPTR() {
   patchActorGetRollOptions();
   patchActorGetFilteredRollOptions();
   patchActorGetSelfRollOptions();
-  patchActorPrepareDerivedData();
   patchActorApplyDamage();
   patchConditionTurnEnd();
   patchParalysisHandler();
@@ -535,24 +548,6 @@ function patchActorApplyDamage() {
       }
     }
     return original.call(this, params);
-  };
-}
-
-function patchActorPrepareDerivedData() {
-  const ActorClass = CONFIG.PTU.Actor.documentClass;
-  const original = ActorClass.prototype.prepareDerivedData;
-
-  ActorClass.prototype.prepareDerivedData = function patchedPrepareDerivedData(...args) {
-    const result = original.apply(this, args);
-    if (!isEnabled()) return result;
-
-    if (isBossActor(this) && (hasCondition(this, "drowsy") || hasCondition(this, "chilled"))) {
-      for (const key of ["physical", "special", "speed"]) {
-        const current = Number(this.system.evasion?.[key] ?? 0);
-        foundry.utils.setProperty(this, `system.evasion.${key}`, Math.floor(current / 2));
-      }
-    }
-    return result;
   };
 }
 

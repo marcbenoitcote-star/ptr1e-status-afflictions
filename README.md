@@ -101,8 +101,8 @@ The module deliberately keeps Mark, Coat, Seeded source-specific effects flexibl
 - Try dragging a Tripped token. Confirm movement is blocked and the message explains standing with a Shift Action and Attack of Opportunity risk from adjacent or Reach opponents.
 - Apply Weakened to a target and deal damage to it. Confirm incoming effectiveness is one step better.
 - Have a Weakened actor deal damage. Confirm its outgoing damage is treated as resisted one additional step.
-- Apply Sleep to a Boss Template. Confirm it becomes Drowsy, keeps actions, has halved evasion, and failed saves apply a -10 next Damage Roll effect.
-- Apply Frozen to a Boss Template. Confirm it becomes Chilled instead of Frozen and keeps actions.
+- Apply Sleep to a Boss Template. Confirm it becomes Drowsy, keeps actions, has halved evasion from the condition Rule Elements, and failed saves apply a -10 next Damage Roll effect.
+- Apply Frozen to a Boss Template. Confirm it becomes Chilled instead of Frozen, keeps actions, and halves evasion from the condition Rule Elements.
 - Apply Provoked, Infatuation, or Seeded. Confirm the module asks for the linked scene actor.
 - With Provoked, attack a target that does not include the provoking actor and confirm -6 Accuracy appears.
 - With Infatuation, attack without the Crush and confirm -5 damage; attack the Crush and confirm the Attack/Special Attack contribution is reduced.
@@ -110,6 +110,11 @@ The module deliberately keeps Mark, Coat, Seeded source-specific effects flexibl
 - Start a combatant turn with active managed afflictions. Confirm one compact chat card appears with expandable information and item links.
 
 ## Changelog
+
+### 0.3.1
+
+- Moved Drowsy and Chilled evasion reduction onto their condition items with `ActiveEffectLike` Rule Elements.
+- Removed the older runtime-derived-data evasion patch so Boss Drowsy/Chilled does not double-apply the evasion reduction.
 
 ### 0.3.0
 
