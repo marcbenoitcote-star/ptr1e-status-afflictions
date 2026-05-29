@@ -1,0 +1,20 @@
+{
+  "PTR_STATUS.ModuleName": "PTR1e Status Afflictions",
+  "PTR_STATUS.Settings.Enabled.Name": "Enable status replacement",
+  "PTR_STATUS.Settings.Enabled.Hint": "Replace supported PTR status timing, save checks, and boss-template conversions.",
+  "PTR_STATUS.Settings.Chat.Name": "Show status chat messages",
+  "PTR_STATUS.Settings.Chat.Hint": "Post concise private status automation messages to GMs and owners.",
+  "PTR_STATUS.Settings.BossCounts.Name": "Boss action-gating by initiative count",
+  "PTR_STATUS.Settings.BossCounts.Hint": "When possible, action-denial conditions affect only the assigned boss combatant count.",
+  "PTR_STATUS.Chat.Damage": "{actor} loses {amount} HP from {label}.",
+  "PTR_STATUS.Chat.Heal": "{actor} recovers from {label}.",
+  "PTR_STATUS.Chat.SaveSuccess": "{actor} succeeds the {label} Save Check ({roll} vs {dc}).",
+  "PTR_STATUS.Chat.SaveFail": "{actor} fails the {label} Save Check ({roll} vs {dc}).",
+  "PTR_STATUS.Chat.Blocked": "{actor} cannot gain {label}: {reason}.",
+  "PTR_STATUS.Chat.BossAssigned": "{label} is assigned to {actor}'s initiative count {initiative}.",
+  "PTR_STATUS.Chat.BossPenalty": "{actor} suffers -10 to the next damage roll from {label}.",
+  "PTR_STATUS.Reason.GhostBleeding": "Ghost-Type targets are immune to Bleeding.",
+  "PTR_STATUS.Reason.IceFrozen": "Ice-Type targets are immune to Frozen/Chilled.",
+  "PTR_STATUS.Reason.WeakenedCooldown": "Boss Weakened immunity is still active.",
+  "PTR_STATUS.Reason.DisableActive": "A Boss Template can only have one Disabled move at a time."
+}

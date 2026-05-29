@@ -1,0 +1,20 @@
+{
+  "PTR_STATUS.ModuleName": "PTR1e Status Afflictions",
+  "PTR_STATUS.Settings.Enabled.Name": "Activer le remplacement des statuts",
+  "PTR_STATUS.Settings.Enabled.Hint": "Remplace le timing, les Save Checks et les conversions Boss Template des statuts supportes.",
+  "PTR_STATUS.Settings.Chat.Name": "Afficher les messages de statut",
+  "PTR_STATUS.Settings.Chat.Hint": "Publie des messages prives concis aux MJ et proprietaires.",
+  "PTR_STATUS.Settings.BossCounts.Name": "Controle boss par Initiative Count",
+  "PTR_STATUS.Settings.BossCounts.Hint": "Quand possible, les conditions de controle affectent seulement le count de boss assigne.",
+  "PTR_STATUS.Chat.Damage": "{actor} perd {amount} PV a cause de {label}.",
+  "PTR_STATUS.Chat.Heal": "{actor} guerit de {label}.",
+  "PTR_STATUS.Chat.SaveSuccess": "{actor} reussit le Save Check de {label} ({roll} vs {dc}).",
+  "PTR_STATUS.Chat.SaveFail": "{actor} echoue le Save Check de {label} ({roll} vs {dc}).",
+  "PTR_STATUS.Chat.Blocked": "{actor} ne peut pas gagner {label}: {reason}.",
+  "PTR_STATUS.Chat.BossAssigned": "{label} est assigne au count d'initiative {initiative} de {actor}.",
+  "PTR_STATUS.Chat.BossPenalty": "{actor} subit -10 au prochain Damage Roll a cause de {label}.",
+  "PTR_STATUS.Reason.GhostBleeding": "Les cibles Ghost-Type sont immunisees a Bleeding.",
+  "PTR_STATUS.Reason.IceFrozen": "Les cibles Ice-Type sont immunisees a Frozen/Chilled.",
+  "PTR_STATUS.Reason.WeakenedCooldown": "L'immunite Weakened du Boss est encore active.",
+  "PTR_STATUS.Reason.DisableActive": "Un Boss Template ne peut avoir qu'un seul Move Disabled a la fois."
+}

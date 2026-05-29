@@ -1,0 +1,46 @@
+{
+  "id": "ptr1e-status-afflictions",
+  "title": "PTR1e Status Afflictions",
+  "description": "Fast tabletop automation for PTR1e status afflictions, including boss-template variants.",
+  "authors": [
+    {
+      "name": "Pokemon PTU Custom Server"
+    }
+  ],
+  "version": "0.1.0",
+  "url": "https://github.com/marcbenoitcote-star/ptr1e-status-afflictions",
+  "manifest": "https://raw.githubusercontent.com/marcbenoitcote-star/ptr1e-status-afflictions/main/module.json",
+  "download": "https://github.com/marcbenoitcote-star/ptr1e-status-afflictions/releases/latest/download/module.zip",
+  "compatibility": {
+    "minimum": "13.345",
+    "verified": "13.350"
+  },
+  "system": ["ptu"],
+  "relationships": {
+    "systems": [
+      {
+        "id": "ptu",
+        "type": "system",
+        "manifest": "https://github.com/pokemon-tabletop-reunited/ptr1e/releases/latest/download/system.json",
+        "compatibility": {
+          "minimum": "4.4.3",
+          "verified": "4.4.3"
+        }
+      }
+    ]
+  },
+  "esmodules": ["scripts/main.js"],
+  "languages": [
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "lang/en.json"
+    },
+    {
+      "lang": "fr",
+      "name": "Francais",
+      "path": "lang/fr.json"
+    }
+  ],
+  "readme": "README.md"
+}
