@@ -13,6 +13,10 @@ const ACTION_GATE_SLUGS = new Set(["paralysis", "confused", "infatuation", "prov
 const LINKED_SOURCE_SLUGS = new Set(["seeded", "provoked", "infatuation"]);
 const FREEZE_LINKED_HELPERS = new Set(["vulnerable", "stuck"]);
 const WORLD_ITEM_FOLDER = "PTR Status Afflictions";
+const ERROR_COOLDOWN_MS = 5000;
+const MOVEMENT_MESSAGE_COOLDOWN_MS = 2000;
+const throttledErrors = new Map();
+const movementMessages = new Map();
 const TYPES = [
   "Normal", "Fighting", "Flying", "Poison", "Ground", "Rock", "Bug", "Ghost", "Steel",
   "Fire", "Water", "Grass", "Electric", "Psychic", "Ice", "Dragon", "Dark", "Fairy",
@@ -117,7 +121,7 @@ const CONDITION_DEFINITIONS = {
     name: "Seeded",
     img: "systems/ptu/static/images/conditions/Seeded.svg",
     sourcePrompt: "PTR_STATUS.Prompt.SeededSource",
-    effect: "<p>Special Mark/Coat condition. Its drain or loss is defined by the source. Boss drain/loss is limited to once per round.</p>"
+    effect: "<p>Special Mark/Coat condition. The target loses 1 Tick at end turn and the linked source recovers the HP lost. Boss drain/loss is limited to once per round.</p>"
   },
   cursed: {
     name: "Cursed",
@@ -171,7 +175,7 @@ Hooks.once("ready", () => {
   exposeApi();
   registerTurnSummaryHook();
   if (game.user.isGM && game.settings.get(MODULE_ID, "worldItems")) {
-    ensureWorldStatusItems();
+    ensureWorldStatusItems().catch((error) => warnThrottled("world-items", error));
   }
   console.log(`${MODULE_ID} | Ready.`);
 });
@@ -373,9 +377,14 @@ function mergeConditionDefaults(data, slug) {
     return data;
   }
 
-  const merged = foundry.utils.mergeObject(createConditionData(slug), data, { inplace: false, overwrite: true });
+  const base = createConditionData(slug);
+  const merged = foundry.utils.mergeObject(base, data, { inplace: false, overwrite: true });
+  merged.name = base.name;
+  merged.img = base.img;
+  merged.system.slug = slug;
   merged.system.effect = fullStatusEffect(slug, definition.effect ?? "");
-  merged.system.rules = createConditionData(slug).system.rules;
+  merged.system.rules = base.system.rules;
+  if (base.system.persistent) merged.system.persistent = base.system.persistent;
   return merged;
 }
 
@@ -541,10 +550,12 @@ function patchActorApplyDamage() {
   const original = ActorClass.prototype.applyDamage;
 
   ActorClass.prototype.applyDamage = async function patchedApplyDamage(params = {}) {
-    if (isEnabled() && params?.rollOptions) {
-      const options = params.rollOptions instanceof Set ? params.rollOptions : new Set(params.rollOptions);
-      if (options.has("origin:condition:weakened") && params.effectiveness !== -1) {
-        params = { ...params, rollOptions: options, effectiveness: (params.effectiveness ?? 1) * 0.5 };
+    if (isEnabled()) {
+      const rollOptions = normalizeRollOptions(params.rollOptions);
+      const optionSet = new Set(rollOptions);
+      params = { ...params, rollOptions };
+      if (optionSet.has("origin:condition:weakened") && params.effectiveness !== -1) {
+        params = { ...params, effectiveness: (params.effectiveness ?? 1) * 0.5 };
       }
     }
     return original.call(this, params);
@@ -606,56 +617,71 @@ function patchConditionFromEffects() {
 
 function registerMovementHooks() {
   Hooks.on("preUpdateToken", (tokenDocument, changed, options) => {
-    if (!isEnabled() || options?.[MODULE_ID]?.ignoreStatusMovement) return true;
-    if (!("x" in changed || "y" in changed)) return true;
+    try {
+      if (!isEnabled() || options?.[MODULE_ID]?.ignoreStatusMovement) return true;
+      if (!("x" in changed || "y" in changed)) return true;
 
-    const actor = tokenDocument.actor;
-    if (!actor) return true;
+      const actor = tokenDocument.actor;
+      if (!actor) return true;
 
-    if (hasCondition(actor, "stuck")) {
-      ui.notifications.warn(game.i18n.format("PTR_STATUS.Movement.Stuck", { actor: actor.name }));
-      post("PTR_STATUS.Movement.Stuck", { actor: actor.link }, actor);
-      return false;
+      if (hasCondition(actor, "stuck")) {
+        notifyMovementBlocked(actor, "PTR_STATUS.Movement.Stuck");
+        return false;
+      }
+
+      if (hasCondition(actor, "tripped")) {
+        notifyMovementBlocked(actor, "PTR_STATUS.Movement.Tripped");
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      warnThrottled("movement-hook", error);
+      return true;
     }
-
-    if (hasCondition(actor, "tripped")) {
-      ui.notifications.warn(game.i18n.format("PTR_STATUS.Movement.Tripped", { actor: actor.name }));
-      post("PTR_STATUS.Movement.Tripped", { actor: actor.link }, actor);
-      return false;
-    }
-
-    return true;
   });
 }
 
 function registerLinkedConditionCleanup() {
   Hooks.on("deleteItem", async (item) => {
-    if (!isEnabled() || item?.type !== "condition" || !item.actor) return;
-    const linkedIds = item.actor.items
-      .filter((candidate) => candidate.type === "condition" && candidate.getFlag(MODULE_ID, "linkedTo") === item.id)
-      .map((candidate) => candidate.id);
-    if (linkedIds.length) await item.actor.deleteEmbeddedDocuments("Item", linkedIds);
+    try {
+      if (!isEnabled() || item?.type !== "condition" || !item.actor) return;
+      const linkedIds = item.actor.items
+        .filter((candidate) => candidate.type === "condition" && candidate.getFlag(MODULE_ID, "linkedTo") === item.id)
+        .map((candidate) => candidate.id);
+      if (linkedIds.length) await item.actor.deleteEmbeddedDocuments("Item", linkedIds);
+    } catch (error) {
+      warnThrottled("linked-cleanup", error);
+    }
   });
 }
 
 async function handleManagedConditionTurnEnd(condition, options = {}) {
-  const actor = condition.actor;
-  const combatant = game.combat?.combatant;
-  if (isBossActor(actor) && condition.getFlag(MODULE_ID, FLAGS.processedRound) === game.combat?.round) return;
+  try {
+    const actor = condition.actor;
+    if (!actor) return;
+    if (isBossActor(actor) && condition.getFlag(MODULE_ID, FLAGS.processedRound) === game.combat?.round) return;
 
-  if (DOT_SLUGS.has(condition.slug)) await applyDot(condition);
-  if (SAVE_SLUGS.has(condition.slug)) await rollConditionSave(condition, options);
+    if (DOT_SLUGS.has(condition.slug)) await applyDot(condition);
+    const removed = SAVE_SLUGS.has(condition.slug) ? await rollConditionSave(condition, options) : false;
 
-  if (isBossActor(actor)) await condition.setFlag(MODULE_ID, FLAGS.processedRound, game.combat?.round ?? 0);
+    if (!removed && condition.actor && isBossActor(actor)) {
+      await condition.setFlag(MODULE_ID, FLAGS.processedRound, game.combat?.round ?? 0);
+    }
+  } catch (error) {
+    warnThrottled(`turn-end:${condition?.slug ?? "unknown"}`, error);
+  }
 }
 
 async function applyDot(condition) {
   const actor = condition.actor;
-  if (condition.slug === "seeded" && !condition.system?.persistent?.formula) return;
-
   const amount = dotAmount(condition);
   if (amount <= 0) return;
-  await applyFlatHpLoss(actor, amount, condition.name);
+  const applied = await applyFlatHpLoss(actor, amount, condition.name);
+
+  if (condition.slug === "seeded" && applied > 0) {
+    await applySeededDrain(condition, applied);
+  }
 
   if (condition.slug === "badly-poisoned" && typeof condition.value === "number") {
     await condition.increase();
@@ -700,12 +726,13 @@ async function rollConditionSave(condition) {
 
   if (success) {
     await condition.delete();
-    return;
+    return true;
   }
 
   if (condition.slug === "drowsy" || condition.slug === "chilled") {
     await applyBossDamagePenalty(actor, condition.name);
   }
+  return false;
 }
 
 function saveDc(condition) {
@@ -762,17 +789,46 @@ async function applyBossDamagePenalty(actor, label) {
 async function applyFlatHpLoss(actor, amount, label) {
   const oldHp = Number(actor.system?.health?.value ?? 0);
   const newHp = Math.max(0, oldHp - amount);
-  if (newHp === oldHp) return;
+  if (newHp === oldHp) return 0;
   await actor.update({ "system.health.value": newHp });
   await post("PTR_STATUS.Chat.Damage", { actor: actor.link, amount: oldHp - newHp, label }, actor);
+  return oldHp - newHp;
+}
+
+async function applySeededDrain(condition, amount) {
+  const source = await getLinkedActor(condition);
+  if (!source || source.id === condition.actor?.id) return;
+  await healFlatHp(source, amount, condition.name);
+}
+
+async function healFlatHp(actor, amount, label) {
+  const oldHp = Number(actor.system?.health?.value ?? 0);
+  const maxHp = Number(actor.system?.health?.max ?? actor.system?.health?.total ?? 0);
+  const newHp = maxHp > 0 ? Math.min(maxHp, oldHp + amount) : oldHp + amount;
+  if (newHp === oldHp) return 0;
+  await actor.update({ "system.health.value": newHp });
+  await post("PTR_STATUS.Chat.Heal", { actor: actor.link, amount: newHp - oldHp, label }, actor);
+  return newHp - oldHp;
+}
+
+async function getLinkedActor(condition) {
+  const linked = condition.getFlag(MODULE_ID, "linkedActor");
+  const uuid = linked?.tokenUuid ?? linked?.uuid;
+  if (!uuid) return null;
+  const document = await fromUuid(uuid);
+  return document?.actor ?? (document?.documentName === "Actor" ? document : null);
 }
 
 function registerTurnSummaryHook() {
   Hooks.on("ptu.startTurn", async (combatant) => {
-    if (!isEnabled() || !game.settings.get(MODULE_ID, "turnSummary")) return;
-    const actor = combatant?.actor;
-    if (!actor || actor.primaryUpdater && game.user !== actor.primaryUpdater) return;
-    await postTurnStatusSummary(actor);
+    try {
+      if (!isEnabled() || !game.settings.get(MODULE_ID, "turnSummary")) return;
+      const actor = combatant?.actor;
+      if (!actor || actor.primaryUpdater && game.user !== actor.primaryUpdater) return;
+      await postTurnStatusSummary(actor);
+    } catch (error) {
+      warnThrottled("turn-summary", error);
+    }
   });
 }
 
@@ -970,8 +1026,8 @@ function fullStatusEffect(slug, summary) {
       <h3>Normal</h3><ul><li>Default duration: 1 full round.</li><li>Choose the Provoking Combatant when applied.</li><li>Attacks that do not include the provoking combatant suffer -6 Accuracy via predicate rules.</li></ul>
       <h3>Boss Template</h3><ul><li>Affects only the assigned boss Initiative Count.</li></ul>`,
     seeded: `
-      <h3>Normal</h3><ul><li>Special Mark/Coat condition.</li><li>Choose the source when applied.</li><li>Drain or loss depends on the source effect. Generic Persistent damage data is processed if present.</li></ul>
-      <h3>Boss Template</h3><ul><li>HP loss or drain applies once per round only and affects only the current HP Bar.</li></ul>`,
+      <h3>Normal</h3><ul><li>Special Mark/Coat condition.</li><li>Choose the source when applied.</li><li>At end turn, the target loses 1 Tick and the linked source recovers the HP lost.</li><li>Source-specific Seeded effects can still be adjudicated by the table.</li></ul>
+      <h3>Boss Template</h3><ul><li>HP loss and drain apply once per round only and affect only the current HP Bar.</li></ul>`,
     drowsy: `
       <h3>Boss Template</h3><ul><li>Boss Sleep replacement.</li><li>The boss keeps its actions.</li><li>Evasion is halved by automation.</li><li>On a failed Save Check 16+, the boss suffers -10 to its next Damage Roll.</li><li>Taking damage does not automatically remove Drowsy.</li></ul>`,
     chilled: `
@@ -1020,11 +1076,18 @@ function conditionAppliesToCombatant(condition, combatant) {
 }
 
 function isBossActor(actor) {
-  return Boolean(actor?.system?.boss?.is);
+  const boss = actor?.system?.boss;
+  if (!boss) return false;
+  if (isTruthy(boss.is)) return true;
+  return Number(boss.turns ?? 1) > 1 || Number(boss.bars ?? 1) > 1;
 }
 
 function isWeakenedImmune(actor) {
   return isBossActor(actor) && Number(actor.getFlag(MODULE_ID, FLAGS.weakenedImmuneUntil) ?? -1) >= (game.combat?.round ?? 0);
+}
+
+function isTruthy(value) {
+  return value === true || value === 1 || value === "1" || String(value).toLowerCase() === "true";
 }
 
 function hasHeavyShifted(actor) {
@@ -1070,17 +1133,47 @@ function recipients(actor) {
 }
 
 async function post(key, data, actor) {
-  if (!game.settings.get(MODULE_ID, "chat")) return;
-  const content = game.i18n.format(key, data);
-  return ChatMessage.create({
-    content: `<p>${content}</p>`,
-    speaker: ChatMessage.getSpeaker({ actor }),
-    whisper: recipients(actor)
-  });
+  try {
+    if (!game.settings.get(MODULE_ID, "chat")) return null;
+    const content = game.i18n.format(key, data);
+    return await ChatMessage.create({
+      content: `<p>${content}</p>`,
+      speaker: ChatMessage.getSpeaker({ actor }),
+      whisper: recipients(actor)
+    });
+  } catch (error) {
+    warnThrottled(`post:${key}`, error);
+    return null;
+  }
 }
 
 function isEnabled() {
   return game.settings.get(MODULE_ID, "enabled");
+}
+
+function notifyMovementBlocked(actor, key) {
+  const throttleKey = `${actor.uuid}:${key}`;
+  const now = Date.now();
+  if (now - Number(movementMessages.get(throttleKey) ?? 0) < MOVEMENT_MESSAGE_COOLDOWN_MS) return;
+  movementMessages.set(throttleKey, now);
+
+  ui.notifications.warn(game.i18n.format(key, { actor: actor.name }));
+  post(key, { actor: actor.link }, actor);
+}
+
+function normalizeRollOptions(rollOptions) {
+  if (!rollOptions) return [];
+  if (Array.isArray(rollOptions)) return rollOptions;
+  if (rollOptions instanceof Set) return Array.from(rollOptions);
+  if (typeof rollOptions[Symbol.iterator] === "function") return Array.from(rollOptions);
+  return [];
+}
+
+function warnThrottled(scope, error) {
+  const now = Date.now();
+  if (now - Number(throttledErrors.get(scope) ?? 0) < ERROR_COOLDOWN_MS) return;
+  throttledErrors.set(scope, now);
+  console.warn(`${MODULE_ID} | ${scope}`, error);
 }
 
 function conditionLabel(slug) {

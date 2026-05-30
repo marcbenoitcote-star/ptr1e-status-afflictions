@@ -16,7 +16,7 @@
   "PTR_STATUS.Condition.Drowsy": "Drowsy",
   "PTR_STATUS.Condition.Chilled": "Chilled",
   "PTR_STATUS.Chat.Damage": "{actor} loses {amount} HP from {label}.",
-  "PTR_STATUS.Chat.Heal": "{actor} recovers from {label}.",
+  "PTR_STATUS.Chat.Heal": "{actor} recovers {amount} HP from {label}.",
   "PTR_STATUS.Chat.SaveSuccess": "{actor} succeeds the {label} Save Check ({roll} vs {dc}).",
   "PTR_STATUS.Chat.SaveFail": "{actor} fails the {label} Save Check ({roll} vs {dc}).",
   "PTR_STATUS.Chat.Blocked": "{actor} cannot gain {label}: {reason}.",

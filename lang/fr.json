@@ -16,7 +16,7 @@
   "PTR_STATUS.Condition.Drowsy": "Drowsy",
   "PTR_STATUS.Condition.Chilled": "Chilled",
   "PTR_STATUS.Chat.Damage": "{actor} perd {amount} PV a cause de {label}.",
-  "PTR_STATUS.Chat.Heal": "{actor} guerit de {label}.",
+  "PTR_STATUS.Chat.Heal": "{actor} recupere {amount} PV grace a {label}.",
   "PTR_STATUS.Chat.SaveSuccess": "{actor} reussit le Save Check de {label} ({roll} vs {dc}).",
   "PTR_STATUS.Chat.SaveFail": "{actor} echoue le Save Check de {label} ({roll} vs {dc}).",
   "PTR_STATUS.Chat.Blocked": "{actor} ne peut pas gagner {label}: {reason}.",

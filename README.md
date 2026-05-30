@@ -89,7 +89,7 @@ await game.ptrStatus.markHeavyShift(actor);
 
 ## Notes
 
-The module deliberately keeps Mark, Coat, Seeded source-specific effects flexible. If a Seeded item has PTR persistent damage data, it is processed once per eligible round for bosses. Otherwise Seeded remains a tracked special condition for table rulings or source-specific automation.
+The module deliberately keeps Mark and Coat source-specific effects flexible. Seeded uses the selected linked source for its default drain: the target loses 1 Tick at end turn and the source recovers the HP lost. Tables can still adjudicate source-specific Seeded variants manually when a move or feature changes that behavior.
 
 ## Test Checklist
 
@@ -106,10 +106,19 @@ The module deliberately keeps Mark, Coat, Seeded source-specific effects flexibl
 - Apply Provoked, Infatuation, or Seeded. Confirm the module asks for the linked scene actor.
 - With Provoked, attack a target that does not include the provoking actor and confirm -6 Accuracy appears.
 - With Infatuation, attack without the Crush and confirm -5 damage; attack the Crush and confirm the Attack/Special Attack contribution is reduced.
+- With Seeded, end the seeded actor's turn and confirm it loses 1 Tick while the linked source recovers the HP lost.
 - Run Burned, Poisoned, Badly Poisoned, Bleeding, Seeded, and weather/curse-like persistent damage against a Boss with multiple turns. Confirm loss triggers once per round, not once per boss turn.
 - Start a combatant turn with active managed afflictions. Confirm one compact chat card appears with expandable information and item links.
 
 ## Changelog
+
+### 0.3.3
+
+- Fixed Boss Sleep/Frozen conversion by forcing converted condition slugs after merging PTR's original status item data.
+- Added default Seeded drain: the seeded target loses 1 Tick and the linked source heals the HP lost.
+- Added broader Boss detection for Boss actors with multiple turns or HP bars.
+- Added throttled error guards around chat posting, turn summaries, linked-condition cleanup, and movement blocking.
+- Normalized damage roll options before PTR damage application to avoid repeated errors from Set-based roll options.
 
 ### 0.3.2
 
