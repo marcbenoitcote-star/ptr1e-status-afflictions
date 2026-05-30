@@ -4,6 +4,7 @@ const FLAGS = {
   processedRound: "processedRound",
   heavyShiftRound: "heavyShiftRound",
   weakenedImmuneUntil: "weakenedImmuneUntil",
+  temporaryInjuries: "temporaryInjuries",
   patched: "patched"
 };
 
@@ -15,6 +16,7 @@ const FREEZE_LINKED_HELPERS = new Set(["vulnerable", "stuck"]);
 const WORLD_ITEM_FOLDER = "PTR Status Afflictions";
 const ERROR_COOLDOWN_MS = 5000;
 const MOVEMENT_MESSAGE_COOLDOWN_MS = 2000;
+const MAX_TEMPORARY_INJURIES = 5;
 const throttledErrors = new Map();
 const movementMessages = new Map();
 const TYPES = [
@@ -251,12 +253,15 @@ function patchPTR() {
   patchActorGetRollOptions();
   patchActorGetFilteredRollOptions();
   patchActorGetSelfRollOptions();
+  patchActorPrepareDerivedData();
   patchActorApplyDamage();
   patchConditionTurnEnd();
   patchParalysisHandler();
   patchConditionFromEffects();
   registerMovementHooks();
   registerLinkedConditionCleanup();
+  registerActorSheetHooks();
+  registerTemporaryInjuryHooks();
 }
 
 function patchActorCreateEmbedded() {
@@ -545,6 +550,27 @@ function patchActorGetSelfRollOptions() {
   };
 }
 
+function patchActorPrepareDerivedData() {
+  const specificClasses = Object.values(CONFIG.PTU.Actor.documentClasses ?? {}).filter(Boolean);
+  const classes = new Set(specificClasses.length ? specificClasses : [CONFIG.PTU.Actor.documentClass].filter(Boolean));
+
+  for (const ActorClass of classes) {
+    const original = ActorClass.prototype.prepareDerivedData;
+    if (!(original instanceof Function) || original[MODULE_ID]) continue;
+
+    const patched = function patchedPrepareDerivedData(...args) {
+      const result = original.apply(this, args);
+      if (isEnabled()) {
+        applyTemporaryInjuryData(this);
+        applyBossEvasionPenalty(this);
+      }
+      return result;
+    };
+    patched[MODULE_ID] = true;
+    ActorClass.prototype.prepareDerivedData = patched;
+  }
+}
+
 function patchActorApplyDamage() {
   const ActorClass = CONFIG.PTU.Actor.documentClass;
   const original = ActorClass.prototype.applyDamage;
@@ -653,6 +679,26 @@ function registerLinkedConditionCleanup() {
     } catch (error) {
       warnThrottled("linked-cleanup", error);
     }
+  });
+}
+
+function registerActorSheetHooks() {
+  Hooks.on("renderActorSheet", (app, html) => {
+    try {
+      if (!isEnabled() || !app?.actor) return;
+      injectTemporaryInjuries(app, html);
+    } catch (error) {
+      warnThrottled("temporary-injury-sheet", error);
+    }
+  });
+}
+
+function registerTemporaryInjuryHooks() {
+  Hooks.on("preUpdateActor", (_actor, changed) => {
+    const path = `flags.${MODULE_ID}.${FLAGS.temporaryInjuries}`;
+    const value = foundry.utils.getProperty(changed, path);
+    if (value === undefined) return;
+    foundry.utils.setProperty(changed, path, clampTemporaryInjuries(value));
   });
 }
 
@@ -819,6 +865,55 @@ async function getLinkedActor(condition) {
   return document?.actor ?? (document?.documentName === "Actor" ? document : null);
 }
 
+function applyTemporaryInjuryData(actor) {
+  const system = actor?.system;
+  const health = system?.health;
+  if (!health) return;
+
+  const temporary = getTemporaryInjuries(actor);
+  const normal = Number(health.injuries ?? 0);
+  const effective = Math.max(0, normal + temporary);
+
+  health.temporaryInjuries = temporary;
+  health.effectiveInjuries = effective;
+
+  if (effective > 0 && Number.isFinite(Number(health.total))) {
+    health.max = calculateInjuredMaxHealth(system, effective);
+  } else if (Number.isFinite(Number(health.total))) {
+    health.max = Number(health.total);
+  }
+
+  const max = Number(health.max ?? 0);
+  const total = Number(health.total ?? 0);
+  const value = Number(health.value ?? 0);
+  health.percent = max > 0 ? Math.round((value / max) * 100) : 0;
+  health.totalPercent = total > 0 ? Math.round((value / total) * 100) : 0;
+
+  actor.attributes ??= {};
+  actor.attributes.health ??= {};
+  actor.attributes.health.max = health.max;
+  actor.attributes.health.injuries = effective;
+  actor.attributes.health.temporaryInjuries = temporary;
+}
+
+function applyBossEvasionPenalty(actor) {
+  if (!isBossActor(actor) || !(hasCondition(actor, "drowsy") || hasCondition(actor, "chilled"))) return;
+  const evasion = actor.system?.evasion;
+  if (!evasion) return;
+
+  for (const key of ["physical", "special", "speed"]) {
+    const current = Number(evasion[key] ?? 0);
+    if (Number.isFinite(current)) evasion[key] = Math.floor(current / 2);
+  }
+}
+
+function calculateInjuredMaxHealth(system, injuries) {
+  const total = Number(system.health?.total ?? 0);
+  const hardened = Boolean(system.modifiers?.hardened);
+  const injuryFactor = (hardened ? Math.min(injuries, 5) : injuries) / 10;
+  return Math.max(0, Math.trunc(total * (1 - injuryFactor)));
+}
+
 function registerTurnSummaryHook() {
   Hooks.on("ptu.startTurn", async (combatant) => {
     try {
@@ -876,6 +971,48 @@ function describeDuration(condition) {
   return "";
 }
 
+function injectTemporaryInjuries(app, html) {
+  const actor = app.actor;
+  if (!actor?.system?.health) return;
+
+  const root = html?.jquery ? html[0] : html instanceof HTMLElement ? html : html?.[0];
+  if (!root || root.querySelector(".ptr-temp-injuries-row")) return;
+
+  const combatTab = root.querySelector('[data-tab="combat"]') ?? root;
+  const injuryInput = combatTab.querySelector('input[name="system.health.injuries"]');
+  if (!injuryInput) return;
+
+  const anchorRow = injuryInput.closest(".d-flex") ?? injuryInput.parentElement;
+  if (!anchorRow?.parentElement) return;
+
+  const columnClass = injuryInput.closest(".col-sm-6") ? "col-sm-6" : "fb-48";
+  const temporary = getTemporaryInjuries(actor);
+  const normal = Number(actor.system.health.injuries ?? 0);
+  const effective = normal + temporary;
+
+  const row = document.createElement("div");
+  row.className = `ptr-temp-injuries-row d-flex w-100 mt-1 mb-1 ${columnClass === "fb-48" ? "justify-content-between" : ""}`;
+  row.innerHTML = `
+    <div class="${columnClass}">
+      <label>${escapeHtml(game.i18n.localize("PTR_STATUS.TemporaryInjuries.Label"))}</label>
+      <input type="number" min="0" max="${MAX_TEMPORARY_INJURIES}" step="1" value="${temporary}" data-ptr-temporary-injuries>
+    </div>
+    <div class="${columnClass}">
+      <label>${escapeHtml(game.i18n.localize("PTR_STATUS.TemporaryInjuries.Effective"))}</label>
+      <input type="number" value="${effective}" disabled>
+    </div>`;
+
+  anchorRow.insertAdjacentElement("afterend", row);
+
+  const input = row.querySelector("[data-ptr-temporary-injuries]");
+  input?.addEventListener("change", async (event) => {
+    const value = clampTemporaryInjuries(event.currentTarget.value);
+    event.currentTarget.value = value;
+    await setTemporaryInjuries(actor, value);
+    app.render(false);
+  });
+}
+
 async function ensureWorldStatusItems() {
   const folder = await getOrCreateStatusFolder();
   const creations = [];
@@ -921,6 +1058,8 @@ function exposeApi() {
       return [];
     },
     markHeavyShift: async (actor) => actor?.setFlag?.(MODULE_ID, FLAGS.heavyShiftRound, game.combat?.round ?? 0),
+    setTemporaryInjuries,
+    getTemporaryInjuries,
     createConditionData,
     createEffectData
   };
@@ -1092,6 +1231,20 @@ function isTruthy(value) {
 
 function hasHeavyShifted(actor) {
   return Number(actor.getFlag(MODULE_ID, FLAGS.heavyShiftRound) ?? -1) === (game.combat?.round ?? 0);
+}
+
+function getTemporaryInjuries(actor) {
+  return clampTemporaryInjuries(actor?.getFlag?.(MODULE_ID, FLAGS.temporaryInjuries) ?? 0);
+}
+
+async function setTemporaryInjuries(actor, value) {
+  if (!actor) return null;
+  return actor.setFlag(MODULE_ID, FLAGS.temporaryInjuries, clampTemporaryInjuries(value));
+}
+
+function clampTemporaryInjuries(value) {
+  const number = Math.trunc(Number(value ?? 0));
+  return Math.clamp(Number.isFinite(number) ? number : 0, 0, MAX_TEMPORARY_INJURIES);
 }
 
 function getTickAmount(actor) {

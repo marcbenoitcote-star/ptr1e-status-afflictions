@@ -31,6 +31,8 @@
   "PTR_STATUS.Prompt.Crush": "Choisissez le Crush pour Infatuation.",
   "PTR_STATUS.Prompt.ProvokingActor": "Choisissez le Provoking Combatant.",
   "PTR_STATUS.Prompt.SeededSource": "Choisissez la source de Seeded.",
+  "PTR_STATUS.TemporaryInjuries.Label": "Injuries temporaires",
+  "PTR_STATUS.TemporaryInjuries.Effective": "Injuries effectives",
   "PTR_STATUS.Reason.GhostBleeding": "Les cibles Ghost-Type sont immunisees a Bleeding.",
   "PTR_STATUS.Reason.IceFrozen": "Les cibles Ice-Type sont immunisees a Frozen/Chilled.",
   "PTR_STATUS.Reason.WeakenedCooldown": "L'immunite Weakened du Boss est encore active.",
