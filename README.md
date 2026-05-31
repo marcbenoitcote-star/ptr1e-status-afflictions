@@ -115,6 +115,10 @@ The module deliberately keeps Mark and Coat source-specific effects flexible. Se
 
 ## Changelog
 
+### 0.3.6
+
+- Added a lightweight DOM observer fallback that scans open actor sheets after PTR/Foundry render mutations and injects the Temporary Injuries controls if the standard sheet hooks are bypassed.
+
 ### 0.3.5
 
 - Patched PTR actor sheet listener activation directly so the Temporary Injuries controls are injected on the compact Trainer and Pokemon sheets even when Foundry's generic sheet render hook is not fired.

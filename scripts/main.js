@@ -19,6 +19,8 @@ const MOVEMENT_MESSAGE_COOLDOWN_MS = 2000;
 const MAX_TEMPORARY_INJURIES = 5;
 const throttledErrors = new Map();
 const movementMessages = new Map();
+let temporaryInjuryObserver = null;
+let temporaryInjuryScanQueued = false;
 const TYPES = [
   "Normal", "Fighting", "Flying", "Poison", "Ground", "Rock", "Bug", "Ghost", "Steel",
   "Fire", "Water", "Grass", "Electric", "Psychic", "Ice", "Dragon", "Dark", "Fairy",
@@ -263,6 +265,7 @@ function patchPTR() {
   registerLinkedConditionCleanup();
   registerActorSheetHooks();
   registerTemporaryInjuryHooks();
+  registerTemporaryInjuryObserver();
 }
 
 function patchActorCreateEmbedded() {
@@ -706,7 +709,10 @@ function registerLinkedConditionCleanup() {
 
 function registerActorSheetHooks() {
   for (const hook of ["renderActorSheet", "renderPTUActorSheet", "renderPTUCharacterSheet", "renderPTUPokemonSheet"]) {
-    Hooks.on(hook, (app, html) => scheduleTemporaryInjuryInjection(app, html));
+    Hooks.on(hook, (app, html) => {
+      scheduleTemporaryInjuryInjection(app, html);
+      scheduleTemporaryInjuryScan();
+    });
   }
 }
 
@@ -717,6 +723,26 @@ function registerTemporaryInjuryHooks() {
     if (value === undefined) return;
     foundry.utils.setProperty(changed, path, clampTemporaryInjuries(value));
   });
+}
+
+function registerTemporaryInjuryObserver() {
+  if (temporaryInjuryObserver || typeof MutationObserver === "undefined" || !document?.body) return;
+
+  temporaryInjuryObserver = new MutationObserver((mutations) => {
+    const shouldScan = mutations.some((mutation) => Array.from(mutation.addedNodes ?? []).some(nodeContainsActorSheet));
+    if (shouldScan) scheduleTemporaryInjuryScan();
+  });
+  temporaryInjuryObserver.observe(document.body, { childList: true, subtree: true });
+  scheduleTemporaryInjuryScan();
+}
+
+function nodeContainsActorSheet(node) {
+  if (!(node instanceof HTMLElement)) return false;
+  return Boolean(
+    node.matches?.(".app.sheet.actor, .ptu.sheet.actor, .window-app.sheet.actor")
+    || node.querySelector?.('input[name="system.health.injuries"]')
+    || node.querySelector?.(".app.sheet.actor, .ptu.sheet.actor, .window-app.sheet.actor")
+  );
 }
 
 async function handleManagedConditionTurnEnd(condition, options = {}) {
@@ -997,6 +1023,26 @@ function scheduleTemporaryInjuryInjection(app, html) {
       warnThrottled("temporary-injury-sheet", error);
     }
   }, 0);
+}
+
+function scheduleTemporaryInjuryScan() {
+  if (temporaryInjuryScanQueued) return;
+  temporaryInjuryScanQueued = true;
+  window.setTimeout(() => {
+    temporaryInjuryScanQueued = false;
+    try {
+      injectTemporaryInjuriesInOpenSheets();
+    } catch (error) {
+      warnThrottled("temporary-injury-scan", error);
+    }
+  }, 50);
+}
+
+function injectTemporaryInjuriesInOpenSheets() {
+  for (const app of Object.values(ui.windows ?? {})) {
+    if (!app?.actor?.system?.health) continue;
+    injectTemporaryInjuries(app, app.element);
+  }
 }
 
 function injectTemporaryInjuries(app, html) {
