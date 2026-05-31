@@ -258,6 +258,7 @@ function patchPTR() {
   patchConditionTurnEnd();
   patchParalysisHandler();
   patchConditionFromEffects();
+  patchActorSheets();
   registerMovementHooks();
   registerLinkedConditionCleanup();
   registerActorSheetHooks();
@@ -641,6 +642,27 @@ function patchConditionFromEffects() {
   };
 }
 
+function patchActorSheets() {
+  const classes = new Set([
+    CONFIG.PTU.Actor.sheetClasses?.character,
+    CONFIG.PTU.Actor.sheetClasses?.pokemon,
+    CONFIG.PTU.Actor.sheetClass
+  ].filter(Boolean));
+
+  for (const SheetClass of classes) {
+    const original = SheetClass.prototype.activateListeners;
+    if (!(original instanceof Function) || original[MODULE_ID]) continue;
+
+    const patched = function patchedActivateListeners(html, ...args) {
+      const result = original.call(this, html, ...args);
+      scheduleTemporaryInjuryInjection(this, html);
+      return result;
+    };
+    patched[MODULE_ID] = true;
+    SheetClass.prototype.activateListeners = patched;
+  }
+}
+
 function registerMovementHooks() {
   Hooks.on("preUpdateToken", (tokenDocument, changed, options) => {
     try {
@@ -683,14 +705,9 @@ function registerLinkedConditionCleanup() {
 }
 
 function registerActorSheetHooks() {
-  Hooks.on("renderActorSheet", (app, html) => {
-    try {
-      if (!isEnabled() || !app?.actor) return;
-      injectTemporaryInjuries(app, html);
-    } catch (error) {
-      warnThrottled("temporary-injury-sheet", error);
-    }
-  });
+  for (const hook of ["renderActorSheet", "renderPTUActorSheet", "renderPTUCharacterSheet", "renderPTUPokemonSheet"]) {
+    Hooks.on(hook, (app, html) => scheduleTemporaryInjuryInjection(app, html));
+  }
 }
 
 function registerTemporaryInjuryHooks() {
@@ -971,11 +988,22 @@ function describeDuration(condition) {
   return "";
 }
 
+function scheduleTemporaryInjuryInjection(app, html) {
+  window.setTimeout(() => {
+    try {
+      if (!isEnabled() || !app?.actor) return;
+      injectTemporaryInjuries(app, html);
+    } catch (error) {
+      warnThrottled("temporary-injury-sheet", error);
+    }
+  }, 0);
+}
+
 function injectTemporaryInjuries(app, html) {
   const actor = app.actor;
   if (!actor?.system?.health) return;
 
-  const root = html?.jquery ? html[0] : html instanceof HTMLElement ? html : html?.[0];
+  const root = getSheetRoot(app, html);
   if (!root || root.querySelector(".ptr-temp-injuries-row")) return;
 
   const combatTab = root.querySelector('[data-tab="combat"]') ?? root;
@@ -1011,6 +1039,16 @@ function injectTemporaryInjuries(app, html) {
     await setTemporaryInjuries(actor, value);
     app.render(false);
   });
+}
+
+function getSheetRoot(app, html) {
+  if (html?.jquery) return html[0];
+  if (html instanceof HTMLElement) return html;
+  if (html?.[0] instanceof HTMLElement) return html[0];
+  if (app?.element?.jquery) return app.element[0];
+  if (app?.element instanceof HTMLElement) return app.element;
+  if (app?.element?.[0] instanceof HTMLElement) return app.element[0];
+  return document.getElementById(app?.id) ?? null;
 }
 
 async function ensureWorldStatusItems() {

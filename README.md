@@ -115,6 +115,10 @@ The module deliberately keeps Mark and Coat source-specific effects flexible. Se
 
 ## Changelog
 
+### 0.3.5
+
+- Patched PTR actor sheet listener activation directly so the Temporary Injuries controls are injected on the compact Trainer and Pokemon sheets even when Foundry's generic sheet render hook is not fired.
+
 ### 0.3.4
 
 - Drowsy and Chilled now halve Boss evasion after PTR recalculates derived evasion, so the penalty applies even when the visible condition Rule Elements are not sufficient by themselves.
