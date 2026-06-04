@@ -261,11 +261,13 @@ function patchPTR() {
   patchParalysisHandler();
   patchConditionFromEffects();
   patchActorSheets();
+  patchTemplateRendering();
   registerMovementHooks();
   registerLinkedConditionCleanup();
   registerActorSheetHooks();
   registerTemporaryInjuryHooks();
   registerTemporaryInjuryObserver();
+  registerTemporaryInjuryInputListener();
 }
 
 function patchActorCreateEmbedded() {
@@ -667,6 +669,29 @@ function patchActorSheets() {
   }
 }
 
+function patchTemplateRendering() {
+  const handlebars = foundry.applications?.handlebars;
+  if (handlebars?.renderTemplate instanceof Function && !handlebars.renderTemplate[MODULE_ID]) {
+    const original = handlebars.renderTemplate;
+    const patched = async function patchedRenderTemplate(path, data = {}, ...args) {
+      const html = await original.call(this, path, data, ...args);
+      return injectTemporaryInjuryIntoTemplate(path, html, data);
+    };
+    patched[MODULE_ID] = true;
+    handlebars.renderTemplate = patched;
+  }
+
+  if (globalThis.renderTemplate instanceof Function && !globalThis.renderTemplate[MODULE_ID]) {
+    const original = globalThis.renderTemplate;
+    const patched = async function patchedLegacyRenderTemplate(path, data = {}, ...args) {
+      const html = await original.call(this, path, data, ...args);
+      return injectTemporaryInjuryIntoTemplate(path, html, data);
+    };
+    patched[MODULE_ID] = true;
+    globalThis.renderTemplate = patched;
+  }
+}
+
 function registerMovementHooks() {
   Hooks.on("preUpdateToken", (tokenDocument, changed, options) => {
     try {
@@ -730,6 +755,25 @@ function registerTemporaryInjuryHooks() {
     foundry.utils.setProperty(changed, flagPath, clamped);
     foundry.utils.setProperty(changed, systemPath, clamped);
   });
+}
+
+function registerTemporaryInjuryInputListener() {
+  document.addEventListener("change", async (event) => {
+    const input = event.target?.closest?.("[data-ptr-temporary-injuries]");
+    if (!input) return;
+
+    try {
+      const root = input.closest(".app.sheet.actor, .window-app.sheet.actor, .ptu.sheet.actor");
+      const actor = getSheetActor(getAppFromSheetRoot(root), root);
+      if (!actor) return;
+      const value = clampTemporaryInjuries(input.value);
+      input.value = value;
+      await setTemporaryInjuries(actor, value);
+      scheduleTemporaryInjuryScan();
+    } catch (error) {
+      warnThrottled("temporary-injury-input", error);
+    }
+  }, true);
 }
 
 function registerTemporaryInjuryObserver() {
@@ -1032,6 +1076,24 @@ function scheduleTemporaryInjuryInjection(app, html) {
   }, 0);
 }
 
+function injectTemporaryInjuryIntoTemplate(path, html, data = {}) {
+  try {
+    if (!isEnabled() || typeof html !== "string" || !isActorSheetTemplate(path)) return html;
+    const actor = getTemplateActor(data);
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = html;
+    const injected = injectTemporaryInjuryRow(wrapper, actor);
+    return injected ? wrapper.innerHTML : html;
+  } catch (error) {
+    warnThrottled("temporary-injury-template", error);
+    return html;
+  }
+}
+
+function isActorSheetTemplate(path) {
+  return /systems\/ptu\/static\/templates\/actor\/(?:trainer|pokemon)-sheet(?:-compact)?\.hbs$/i.test(String(path ?? ""));
+}
+
 function scheduleTemporaryInjuryScan() {
   if (temporaryInjuryScanQueued) return;
   temporaryInjuryScanQueued = true;
@@ -1062,23 +1124,33 @@ function injectTemporaryInjuries(app, html) {
   const root = getSheetRoot(app, html);
   const actor = getSheetActor(app, root);
   if (!actor?.system?.health) return;
-  if (!root || root.querySelector(".ptr-temp-injuries-row")) return;
+  injectTemporaryInjuryRow(root, actor);
+}
+
+function injectTemporaryInjuryRow(root, actor) {
+  if (!root || root.querySelector(".ptr-temp-injuries-row")) return false;
 
   const combatTab = root.querySelector('[data-tab="combat"]') ?? root;
   const injuryInput = combatTab.querySelector('input[name="system.health.injuries"]');
-  if (!injuryInput) return;
+  if (!injuryInput) return false;
 
   const anchorRow = injuryInput.closest(".d-flex") ?? injuryInput.parentElement;
-  if (!anchorRow?.parentElement) return;
+  if (!anchorRow?.parentElement) return false;
 
   const columnClass = injuryInput.closest(".col-sm-6") ? "col-sm-6" : "fb-48";
   const temporary = getTemporaryInjuries(actor);
-  const normal = Number(actor.system.health.injuries ?? 0);
+  const normal = Number(actor?.system?.health?.injuries ?? 0);
   const effective = normal + temporary;
 
   const row = document.createElement("div");
   row.className = `ptr-temp-injuries-row d-flex w-100 mt-1 mb-1 ${columnClass === "fb-48" ? "justify-content-between" : ""}`;
-  row.innerHTML = `
+  row.innerHTML = buildTemporaryInjuryRowHtml(columnClass, temporary, effective);
+  anchorRow.insertAdjacentElement("afterend", row);
+  return true;
+}
+
+function buildTemporaryInjuryRowHtml(columnClass, temporary, effective) {
+  return `
     <div class="${columnClass}">
       <label>${escapeHtml(game.i18n.localize("PTR_STATUS.TemporaryInjuries.Label"))}</label>
       <input name="system.health.temporaryInjuries" type="number" min="0" max="${MAX_TEMPORARY_INJURIES}" step="1" value="${temporary}" data-dtype="Number" data-ptr-temporary-injuries>
@@ -1087,17 +1159,6 @@ function injectTemporaryInjuries(app, html) {
       <label>${escapeHtml(game.i18n.localize("PTR_STATUS.TemporaryInjuries.Effective"))}</label>
       <input type="number" value="${effective}" disabled>
     </div>`;
-
-  anchorRow.insertAdjacentElement("afterend", row);
-
-  const input = row.querySelector("[data-ptr-temporary-injuries]");
-  input?.addEventListener("change", async (event) => {
-    const value = clampTemporaryInjuries(event.currentTarget.value);
-    event.currentTarget.value = value;
-    await setTemporaryInjuries(actor, value);
-    if (app?.render instanceof Function) app.render(false);
-    else scheduleTemporaryInjuryScan();
-  });
 }
 
 function getSheetRoot(app, html) {
@@ -1121,6 +1182,14 @@ function getSheetActor(app, root = null) {
   const ActorClass = CONFIG.Actor?.documentClass ?? CONFIG.PTU?.Actor?.documentClass;
   if (actor?.documentName === "Actor" || (ActorClass && actor instanceof ActorClass)) return actor;
   return getActorFromSheetRoot(root);
+}
+
+function getTemplateActor(data = {}) {
+  const actor = data.actor ?? data.document ?? data.object;
+  const ActorClass = CONFIG.Actor?.documentClass ?? CONFIG.PTU?.Actor?.documentClass;
+  if (actor?.documentName === "Actor" || (ActorClass && actor instanceof ActorClass)) return actor;
+  if (actor?.id && game.actors?.get(actor.id)) return game.actors.get(actor.id);
+  return null;
 }
 
 function getActorFromSheetRoot(root) {

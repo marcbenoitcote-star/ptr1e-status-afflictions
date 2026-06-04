@@ -115,6 +115,11 @@ The module deliberately keeps Mark and Coat source-specific effects flexible. Se
 
 ## Changelog
 
+### 0.3.8
+
+- Temporary Injuries are now injected into PTR actor sheet HTML during template rendering, before the sheet DOM is displayed.
+- Added a global Temporary Injuries input listener so the manual value is saved even when PTR's sheet listeners bypass module hooks.
+
 ### 0.3.7
 
 - Temporary Injuries are now written to both `actor.system.health.temporaryInjuries` and the module flag, so the value is visible in actor system data during runtime.
