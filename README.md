@@ -115,6 +115,12 @@ The module deliberately keeps Mark and Coat source-specific effects flexible. Se
 
 ## Changelog
 
+### 0.3.7
+
+- Temporary Injuries are now written to both `actor.system.health.temporaryInjuries` and the module flag, so the value is visible in actor system data during runtime.
+- Improved actor-sheet detection by resolving actors from sheet roots, app ids, actor ids, and token ids instead of relying only on `ui.windows`.
+- The injected Temporary Injuries input now uses the `system.health.temporaryInjuries` field name so PTR's own sheet form updates can preserve the value.
+
 ### 0.3.6
 
 - Added a lightweight DOM observer fallback that scans open actor sheets after PTR/Foundry render mutations and injects the Temporary Injuries controls if the standard sheet hooks are bypassed.

@@ -659,6 +659,7 @@ function patchActorSheets() {
     const patched = function patchedActivateListeners(html, ...args) {
       const result = original.call(this, html, ...args);
       scheduleTemporaryInjuryInjection(this, html);
+      scheduleTemporaryInjuryScan();
       return result;
     };
     patched[MODULE_ID] = true;
@@ -718,10 +719,16 @@ function registerActorSheetHooks() {
 
 function registerTemporaryInjuryHooks() {
   Hooks.on("preUpdateActor", (_actor, changed) => {
-    const path = `flags.${MODULE_ID}.${FLAGS.temporaryInjuries}`;
-    const value = foundry.utils.getProperty(changed, path);
+    const flagPath = `flags.${MODULE_ID}.${FLAGS.temporaryInjuries}`;
+    const systemPath = "system.health.temporaryInjuries";
+    const flagValue = foundry.utils.getProperty(changed, flagPath);
+    const systemValue = foundry.utils.getProperty(changed, systemPath);
+    const value = systemValue ?? flagValue;
     if (value === undefined) return;
-    foundry.utils.setProperty(changed, path, clampTemporaryInjuries(value));
+
+    const clamped = clampTemporaryInjuries(value);
+    foundry.utils.setProperty(changed, flagPath, clamped);
+    foundry.utils.setProperty(changed, systemPath, clamped);
   });
 }
 
@@ -1040,16 +1047,21 @@ function scheduleTemporaryInjuryScan() {
 
 function injectTemporaryInjuriesInOpenSheets() {
   for (const app of Object.values(ui.windows ?? {})) {
-    if (!app?.actor?.system?.health) continue;
+    if (!getSheetActor(app)?.system?.health) continue;
     injectTemporaryInjuries(app, app.element);
+  }
+
+  for (const root of document.querySelectorAll(".app.sheet.actor, .window-app.sheet.actor, .ptu.sheet.actor")) {
+    const app = getAppFromSheetRoot(root);
+    if (!getSheetActor(app, root)?.system?.health) continue;
+    injectTemporaryInjuries(app, root);
   }
 }
 
 function injectTemporaryInjuries(app, html) {
-  const actor = app.actor;
-  if (!actor?.system?.health) return;
-
   const root = getSheetRoot(app, html);
+  const actor = getSheetActor(app, root);
+  if (!actor?.system?.health) return;
   if (!root || root.querySelector(".ptr-temp-injuries-row")) return;
 
   const combatTab = root.querySelector('[data-tab="combat"]') ?? root;
@@ -1069,7 +1081,7 @@ function injectTemporaryInjuries(app, html) {
   row.innerHTML = `
     <div class="${columnClass}">
       <label>${escapeHtml(game.i18n.localize("PTR_STATUS.TemporaryInjuries.Label"))}</label>
-      <input type="number" min="0" max="${MAX_TEMPORARY_INJURIES}" step="1" value="${temporary}" data-ptr-temporary-injuries>
+      <input name="system.health.temporaryInjuries" type="number" min="0" max="${MAX_TEMPORARY_INJURIES}" step="1" value="${temporary}" data-dtype="Number" data-ptr-temporary-injuries>
     </div>
     <div class="${columnClass}">
       <label>${escapeHtml(game.i18n.localize("PTR_STATUS.TemporaryInjuries.Effective"))}</label>
@@ -1083,7 +1095,8 @@ function injectTemporaryInjuries(app, html) {
     const value = clampTemporaryInjuries(event.currentTarget.value);
     event.currentTarget.value = value;
     await setTemporaryInjuries(actor, value);
-    app.render(false);
+    if (app?.render instanceof Function) app.render(false);
+    else scheduleTemporaryInjuryScan();
   });
 }
 
@@ -1095,6 +1108,29 @@ function getSheetRoot(app, html) {
   if (app?.element instanceof HTMLElement) return app.element;
   if (app?.element?.[0] instanceof HTMLElement) return app.element[0];
   return document.getElementById(app?.id) ?? null;
+}
+
+function getAppFromSheetRoot(root) {
+  const appId = root?.dataset?.appid ?? root?.closest?.("[data-appid]")?.dataset?.appid;
+  if (appId && ui.windows?.[appId]) return ui.windows[appId];
+  return null;
+}
+
+function getSheetActor(app, root = null) {
+  const actor = app?.actor ?? app?.document ?? app?.object;
+  const ActorClass = CONFIG.Actor?.documentClass ?? CONFIG.PTU?.Actor?.documentClass;
+  if (actor?.documentName === "Actor" || (ActorClass && actor instanceof ActorClass)) return actor;
+  return getActorFromSheetRoot(root);
+}
+
+function getActorFromSheetRoot(root) {
+  if (!(root instanceof HTMLElement)) return null;
+  const actorId = root.dataset?.actorId ?? root.dataset?.documentId ?? root.id?.match(/^actor-([A-Za-z0-9]+)/)?.[1];
+  if (actorId && game.actors?.get(actorId)) return game.actors.get(actorId);
+
+  const tokenId = root.dataset?.tokenId ?? root.id?.match(/^actor-[A-Za-z0-9]+-([A-Za-z0-9]+)/)?.[1];
+  if (tokenId) return canvas?.scene?.tokens?.get(tokenId)?.actor ?? canvas?.tokens?.get(tokenId)?.actor ?? null;
+  return null;
 }
 
 async function ensureWorldStatusItems() {
@@ -1318,12 +1354,21 @@ function hasHeavyShifted(actor) {
 }
 
 function getTemporaryInjuries(actor) {
-  return clampTemporaryInjuries(actor?.getFlag?.(MODULE_ID, FLAGS.temporaryInjuries) ?? 0);
+  return clampTemporaryInjuries(actor?.getFlag?.(MODULE_ID, FLAGS.temporaryInjuries) ?? actor?.system?.health?.temporaryInjuries ?? 0);
 }
 
 async function setTemporaryInjuries(actor, value) {
   if (!actor) return null;
-  return actor.setFlag(MODULE_ID, FLAGS.temporaryInjuries, clampTemporaryInjuries(value));
+  const clamped = clampTemporaryInjuries(value);
+  try {
+    return await actor.update({
+      [`flags.${MODULE_ID}.${FLAGS.temporaryInjuries}`]: clamped,
+      "system.health.temporaryInjuries": clamped
+    });
+  } catch (error) {
+    warnThrottled("temporary-injury-system-update", error);
+    return actor.setFlag(MODULE_ID, FLAGS.temporaryInjuries, clamped);
+  }
 }
 
 function clampTemporaryInjuries(value) {
