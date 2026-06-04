@@ -17,6 +17,10 @@ const WORLD_ITEM_FOLDER = "PTR Status Afflictions";
 const ERROR_COOLDOWN_MS = 5000;
 const MOVEMENT_MESSAGE_COOLDOWN_MS = 2000;
 const MAX_TEMPORARY_INJURIES = 5;
+const SHEET_TEMPLATES = {
+  character: `modules/${MODULE_ID}/templates/actor/trainer-sheet-compact.hbs`,
+  pokemon: `modules/${MODULE_ID}/templates/actor/pokemon-sheet-compact.hbs`
+};
 const throttledErrors = new Map();
 const movementMessages = new Map();
 let temporaryInjuryObserver = null;
@@ -260,6 +264,7 @@ function patchPTR() {
   patchConditionTurnEnd();
   patchParalysisHandler();
   patchConditionFromEffects();
+  registerModuleActorSheets();
   patchActorSheets();
   patchTemplateRendering();
   registerMovementHooks();
@@ -268,6 +273,7 @@ function patchPTR() {
   registerTemporaryInjuryHooks();
   registerTemporaryInjuryObserver();
   registerTemporaryInjuryInputListener();
+  refreshTemporaryInjuryDataForActors();
 }
 
 function patchActorCreateEmbedded() {
@@ -647,14 +653,105 @@ function patchConditionFromEffects() {
   };
 }
 
-function patchActorSheets() {
-  const classes = new Set([
+function registerModuleActorSheets() {
+  const registry = foundry.documents?.collections?.Actors;
+  const CharacterBase = CONFIG.PTU.Actor.sheetClasses?.character;
+  const PokemonBase = CONFIG.PTU.Actor.sheetClasses?.pokemon;
+  if (!registry || CONFIG.PTU[MODULE_ID].sheetsRegistered) {
+    patchActorSheetTemplate(CharacterBase, SHEET_TEMPLATES.character);
+    patchActorSheetTemplate(PokemonBase, SHEET_TEMPLATES.pokemon);
+    return;
+  }
+
+  CONFIG.PTU[MODULE_ID].originalSheetClasses = {
+    character: CharacterBase,
+    pokemon: PokemonBase
+  };
+
+  patchActorSheetTemplate(CharacterBase, SHEET_TEMPLATES.character);
+  patchActorSheetTemplate(PokemonBase, SHEET_TEMPLATES.pokemon);
+
+  if (CharacterBase) {
+    class PTRStatusCharacterSheet extends CharacterBase {
+      static get defaultOptions() {
+        return foundry.utils.mergeObject(super.defaultOptions, {
+          template: SHEET_TEMPLATES.character
+        }, { inplace: false, overwrite: true });
+      }
+    }
+
+    registry.registerSheet(MODULE_ID, PTRStatusCharacterSheet, {
+      types: ["character"],
+      makeDefault: true,
+      label: "PTR_STATUS.Sheet.Character"
+    });
+    CONFIG.PTU.Actor.sheetClasses.character = PTRStatusCharacterSheet;
+  }
+
+  if (PokemonBase) {
+    class PTRStatusPokemonSheet extends PokemonBase {
+      static get defaultOptions() {
+        return foundry.utils.mergeObject(super.defaultOptions, {
+          template: SHEET_TEMPLATES.pokemon
+        }, { inplace: false, overwrite: true });
+      }
+    }
+
+    registry.registerSheet(MODULE_ID, PTRStatusPokemonSheet, {
+      types: ["pokemon"],
+      makeDefault: true,
+      label: "PTR_STATUS.Sheet.Pokemon"
+    });
+    CONFIG.PTU.Actor.sheetClasses.pokemon = PTRStatusPokemonSheet;
+  }
+
+  CONFIG.PTU[MODULE_ID].sheetsRegistered = true;
+}
+
+function patchActorSheetTemplate(SheetClass, template) {
+  if (!SheetClass || !template || SheetClass[`${MODULE_ID}TemplatePatched`]) return;
+  const descriptor = Object.getOwnPropertyDescriptor(SheetClass, "defaultOptions");
+  const original = descriptor?.get;
+  if (!(original instanceof Function)) return;
+
+  Object.defineProperty(SheetClass, "defaultOptions", {
+    configurable: true,
+    get() {
+      return foundry.utils.mergeObject(original.call(this), { template }, { inplace: false, overwrite: true });
+    }
+  });
+  SheetClass[`${MODULE_ID}TemplatePatched`] = true;
+}
+
+function getActorSheetClasses() {
+  const originals = CONFIG.PTU?.[MODULE_ID]?.originalSheetClasses ?? {};
+  return new Set([
     CONFIG.PTU.Actor.sheetClasses?.character,
     CONFIG.PTU.Actor.sheetClasses?.pokemon,
+    originals.character,
+    originals.pokemon,
     CONFIG.PTU.Actor.sheetClass
   ].filter(Boolean));
+}
+
+function patchActorSheets() {
+  const classes = getActorSheetClasses();
 
   for (const SheetClass of classes) {
+    const originalGetData = SheetClass.prototype.getData;
+    if (originalGetData instanceof Function && !originalGetData[`${MODULE_ID}TemporaryData`]) {
+      const patchedGetData = async function patchedGetData(...args) {
+        const data = await originalGetData.apply(this, args);
+        if (isEnabled() && this.actor) {
+          applyTemporaryInjuryData(this.actor);
+          syncTemporaryInjurySheetData(data, this.actor);
+        }
+        return data;
+      };
+      patchedGetData[`${MODULE_ID}TemporaryData`] = true;
+      SheetClass.prototype.getData = patchedGetData;
+    }
+
     const original = SheetClass.prototype.activateListeners;
     if (!(original instanceof Function) || original[MODULE_ID]) continue;
 
@@ -666,6 +763,22 @@ function patchActorSheets() {
     };
     patched[MODULE_ID] = true;
     SheetClass.prototype.activateListeners = patched;
+  }
+}
+
+function syncTemporaryInjurySheetData(data, actor) {
+  const health = actor?.system?.health;
+  if (!health) return;
+
+  for (const candidate of [data?.actor, data?.document, data?.object]) {
+    if (!candidate?.system?.health) continue;
+    candidate.system.health.temporaryInjuries = health.temporaryInjuries;
+    candidate.system.health.effectiveInjuries = health.effectiveInjuries;
+  }
+
+  if (data?.data?.health) {
+    data.data.health.temporaryInjuries = health.temporaryInjuries;
+    data.data.health.effectiveInjuries = health.effectiveInjuries;
   }
 }
 
@@ -957,6 +1070,18 @@ async function getLinkedActor(condition) {
   if (!uuid) return null;
   const document = await fromUuid(uuid);
   return document?.actor ?? (document?.documentName === "Actor" ? document : null);
+}
+
+function refreshTemporaryInjuryDataForActors() {
+  if (!isEnabled()) return;
+  for (const actor of game.actors ?? []) {
+    try {
+      applyTemporaryInjuryData(actor);
+      applyBossEvasionPenalty(actor);
+    } catch (error) {
+      warnThrottled(`temporary-injury-refresh-${actor?.id ?? "unknown"}`, error);
+    }
+  }
 }
 
 function applyTemporaryInjuryData(actor) {

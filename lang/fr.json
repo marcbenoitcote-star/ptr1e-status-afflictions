@@ -10,6 +10,8 @@
   "PTR_STATUS.Settings.TurnSummary.Hint": "Au debut du tour d'un combattant, publie un resume compact et cliquable de ses afflictions actives.",
   "PTR_STATUS.Settings.WorldItems.Name": "Creer les items monde des statuts",
   "PTR_STATUS.Settings.WorldItems.Hint": "Pour les MJ, cree ou rafraichit des Items faciles d'acces dans un dossier PTR Status Afflictions.",
+  "PTR_STATUS.Sheet.Character": "Fiche Trainer PTR Status",
+  "PTR_STATUS.Sheet.Pokemon": "Fiche Pokemon PTR Status",
   "PTR_STATUS.Condition.Bleeding": "Bleeding",
   "PTR_STATUS.Condition.Weakened": "Weakened",
   "PTR_STATUS.Condition.Provoked": "Provoked",

@@ -10,6 +10,8 @@
   "PTR_STATUS.Settings.TurnSummary.Hint": "At the start of a combatant's turn, post a compact clickable summary of its active afflictions.",
   "PTR_STATUS.Settings.WorldItems.Name": "Create world status items",
   "PTR_STATUS.Settings.WorldItems.Hint": "For GMs, create or refresh easy-access Item documents in a PTR Status Afflictions folder.",
+  "PTR_STATUS.Sheet.Character": "PTR Status Character Sheet",
+  "PTR_STATUS.Sheet.Pokemon": "PTR Status Pokemon Sheet",
   "PTR_STATUS.Condition.Bleeding": "Bleeding",
   "PTR_STATUS.Condition.Weakened": "Weakened",
   "PTR_STATUS.Condition.Provoked": "Provoked",

@@ -115,6 +115,13 @@ The module deliberately keeps Mark and Coat source-specific effects flexible. Se
 
 ## Changelog
 
+### 0.3.9
+
+- Added module-owned PTR actor sheet templates for compact Trainer and Pokemon sheets.
+- Registered **PTR Status Character Sheet** and **PTR Status Pokemon Sheet** as default actor sheets, and patched PTR's original sheet templates as a fallback for existing actors pinned to the original sheet class.
+- Temporary Injuries are now rendered directly by the actor sheet template below Injuries instead of relying only on post-render DOM injection.
+- Temporary Injury data is refreshed into runtime `actor.system.health.temporaryInjuries` and `actor.system.health.effectiveInjuries` before sheet rendering.
+
 ### 0.3.8
 
 - Temporary Injuries are now injected into PTR actor sheet HTML during template rendering, before the sheet DOM is displayed.
