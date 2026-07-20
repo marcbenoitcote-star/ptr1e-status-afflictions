@@ -6,6 +6,7 @@ const FLAGS = {
   weakenedImmuneUntil: "weakenedImmuneUntil",
   temporaryInjuries: "temporaryInjuries",
   nonlethalHits: "nonlethalHits",
+  stageCounter: "stageCounter",
   patched: "patched"
 };
 
@@ -22,6 +23,7 @@ const SHEET_TEMPLATES = {
   character: `modules/${MODULE_ID}/templates/actor/trainer-sheet-compact.hbs`,
   pokemon: `modules/${MODULE_ID}/templates/actor/pokemon-sheet-compact.hbs`
 };
+const STAGE_COUNTER_RULE_KEY = "StageCounter";
 const STRIKE_KINDS = {
   double: { label: "Double Strike", maxRolls: 2, mode: "double" },
   five: { label: "Five Strike", maxRolls: 5, mode: "add", maxBonus: 8 },
@@ -190,11 +192,15 @@ Hooks.once("init", () => {
 
 Hooks.once("setup", () => {
   if (game.system.id !== "ptu") return;
+  registerStageCounterRuleElement();
+  registerStageCounterRuleForm();
   installActorSheetSupport();
 });
 
 Hooks.once("ready", () => {
   if (game.system.id !== "ptu") return;
+  registerStageCounterRuleElement();
+  registerStageCounterRuleForm();
   registerStatusEffects();
   patchPTR();
   exposeApi();
@@ -266,6 +272,71 @@ function registerStatusEffects() {
   CONFIG.statusEffects = statusEffects;
 }
 
+function registerStageCounterRuleElement() {
+  const RuleElements = CONFIG.PTU?.rule?.elements;
+  if (!RuleElements?.custom || RuleElements.custom[STAGE_COUNTER_RULE_KEY]) return;
+
+  const BaseRuleElement = Object.getPrototypeOf(RuleElements.builtin?.RollOption);
+  if (!BaseRuleElement?.defineSchema) return;
+
+  class StageCounterRuleElement extends BaseRuleElement {
+    constructor(source, item, options) {
+      super({ priority: 1, ...source }, item, options);
+    }
+
+    static defineSchema() {
+      const { fields } = foundry.data;
+      return {
+        ...super.defineSchema(),
+        name: new fields.StringField({ required: false, nullable: false, blank: false, initial: "Stage" }),
+        min: new fields.NumberField({ required: false, nullable: false, integer: true, initial: 0 }),
+        max: new fields.NumberField({ required: false, nullable: false, integer: true, initial: 6 }),
+        value: new fields.NumberField({ required: false, nullable: false, integer: true, initial: 0 }),
+        rollOption: new fields.BooleanField({ required: false, nullable: false, initial: true })
+      };
+    }
+
+    preCreate({ itemSource, ruleSource }) {
+      if (itemSource?.type !== "effect") return;
+      applyStageCounterToSource(itemSource, ruleSource ?? this.data, { preserveValue: false });
+    }
+
+    beforePrepareData() {
+      if (this.item?.type !== "effect" || !this.test()) return;
+      const stage = applyStageCounterRuntime(this.item, this.data);
+      publishStageCounterRollOptions(this.actor, this.item, stage);
+    }
+  }
+
+  RuleElements.custom[STAGE_COUNTER_RULE_KEY] = StageCounterRuleElement;
+}
+
+async function registerStageCounterRuleForm() {
+  try {
+    const forms = await import("/systems/ptu/src/module/item/sheet/rule-elements/index.js");
+    if (!forms?.RULE_ELEMENT_FORMS || forms.RULE_ELEMENT_FORMS[STAGE_COUNTER_RULE_KEY]) return;
+
+    class StageCounterForm extends forms.RuleElementForm {
+      get template() {
+        return `modules/${MODULE_ID}/templates/item/rules/stage-counter.hbs`;
+      }
+
+      _updateObject(rule) {
+        const config = normalizeStageCounterConfig(rule);
+        rule.name = config.name;
+        rule.min = config.min;
+        rule.max = config.max;
+        rule.value = config.value;
+        rule.rollOption = rule.rollOption !== false;
+      }
+    }
+
+    forms.RULE_ELEMENT_FORMS[STAGE_COUNTER_RULE_KEY] = StageCounterForm;
+  } catch (error) {
+    warnThrottled("stage-counter-form", error);
+  }
+}
+
 function patchPTR() {
   ensureModuleConfig();
   if (CONFIG.PTU?.[MODULE_ID]?.[FLAGS.patched]) return;
@@ -288,6 +359,7 @@ function patchPTR() {
   registerTemporaryInjuryHooks();
   registerTemporaryInjuryObserver();
   registerTemporaryInjuryInputListener();
+  registerStageCounterInputListener();
   refreshTemporaryInjuryDataForActors();
 }
 
@@ -590,6 +662,7 @@ function patchActorPrepareDerivedData() {
       if (isEnabled()) {
         applyTemporaryInjuryData(this);
         applyBossEvasionPenalty(this);
+        applyStageCounterData(this);
         patchStrikeAttackActions(this);
       }
       return result;
@@ -1360,6 +1433,7 @@ function registerActorSheetHooks() {
   for (const hook of ["renderActorSheet", "renderPTUActorSheet", "renderPTUCharacterSheet", "renderPTUPokemonSheet"]) {
     Hooks.on(hook, (app, html) => {
       scheduleTemporaryInjuryInjection(app, html);
+      scheduleStageCounterInjection(app, html);
       scheduleTemporaryInjuryScan();
     });
   }
@@ -1414,6 +1488,45 @@ function registerTemporaryInjuryInputListener() {
       scheduleTemporaryInjuryScan();
     } catch (error) {
       warnThrottled("temporary-injury-input", error);
+    }
+  }, true);
+}
+
+function registerStageCounterInputListener() {
+  document.addEventListener("click", async (event) => {
+    const button = event.target?.closest?.("[data-ptr-stage-action]");
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    try {
+      const item = getStageCounterItemFromElement(button);
+      if (!item) return;
+      const stage = getStageCounterFlag(item) ?? applyStageCounterRuntime(item, getStageCounterRuleSource(item));
+      const delta = button.dataset.ptrStageAction === "increase" ? 1 : -1;
+      await setStageCounter(item, Number(stage.value ?? 0) + delta);
+      scheduleTemporaryInjuryScan();
+    } catch (error) {
+      warnThrottled("stage-counter-click", error);
+    }
+  }, true);
+
+  document.addEventListener("change", async (event) => {
+    const input = event.target?.closest?.("[data-ptr-stage-input]");
+    if (!input) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    try {
+      const item = getStageCounterItemFromElement(input);
+      if (!item) return;
+      const stage = getStageCounterFlag(item) ?? applyStageCounterRuntime(item, getStageCounterRuleSource(item));
+      const value = clampStageCounter(input.value, stage.min, stage.max);
+      input.value = value;
+      await setStageCounter(item, value);
+      scheduleTemporaryInjuryScan();
+    } catch (error) {
+      warnThrottled("stage-counter-input", error);
     }
   }, true);
 }
@@ -1607,10 +1720,109 @@ function refreshTemporaryInjuryDataForActors() {
     try {
       applyTemporaryInjuryData(actor);
       applyBossEvasionPenalty(actor);
+      applyStageCounterData(actor);
     } catch (error) {
       warnThrottled(`temporary-injury-refresh-${actor?.id ?? "unknown"}`, error);
     }
   }
+}
+
+function applyStageCounterData(actor) {
+  if (!actor?.items) return;
+  for (const item of actor.items.filter((candidate) => candidate.type === "effect")) {
+    const rule = getStageCounterRuleSource(item);
+    if (!rule && !getStageCounterFlag(item)) continue;
+    const stage = applyStageCounterRuntime(item, rule);
+    publishStageCounterRollOptions(actor, item, stage);
+  }
+}
+
+function getStageCounterRuleSource(item) {
+  return (item?.system?.rules ?? []).find((rule) => rule?.key === STAGE_COUNTER_RULE_KEY) ?? null;
+}
+
+function applyStageCounterToSource(itemSource, ruleSource, { preserveValue = true } = {}) {
+  const existing = foundry.utils.getProperty(itemSource, `flags.${MODULE_ID}.${FLAGS.stageCounter}`) ?? {};
+  const baseName = existing.baseName ?? itemSource.name ?? "Effect";
+  const stage = buildStageCounterData(ruleSource, existing, baseName, { preserveValue });
+  foundry.utils.setProperty(itemSource, `flags.${MODULE_ID}.${FLAGS.stageCounter}`, stage);
+  return stage;
+}
+
+function applyStageCounterRuntime(item, ruleSource = null) {
+  const existing = getStageCounterFlag(item);
+  const baseName = existing?.baseName ?? item?._source?.name ?? item?.name ?? "Effect";
+  const stage = buildStageCounterData(ruleSource ?? existing, existing, baseName, { preserveValue: true });
+
+  item.flags ??= {};
+  item.flags[MODULE_ID] ??= {};
+  item.flags[MODULE_ID][FLAGS.stageCounter] = stage;
+  item.name = formatStageCounterName(stage);
+  return stage;
+}
+
+function buildStageCounterData(ruleSource = {}, existing = {}, baseName = "Effect", { preserveValue = true } = {}) {
+  const config = normalizeStageCounterConfig(ruleSource);
+  const value = preserveValue
+    ? clampStageCounter(existing?.value ?? config.value, config.min, config.max)
+    : config.value;
+  return {
+    enabled: true,
+    baseName: existing?.baseName ?? baseName,
+    name: config.name,
+    min: config.min,
+    max: config.max,
+    value,
+    rollOption: config.rollOption
+  };
+}
+
+function normalizeStageCounterConfig(source = {}) {
+  const min = stageInteger(source?.min, 0);
+  const max = Math.max(min, stageInteger(source?.max, 6));
+  const value = clampStageCounter(stageInteger(source?.value, min), min, max);
+  const name = String(source?.name ?? source?.stageName ?? "Stage").trim() || "Stage";
+  return {
+    name,
+    min,
+    max,
+    value,
+    rollOption: source?.rollOption !== false
+  };
+}
+
+function publishStageCounterRollOptions(actor, item, stage) {
+  if (!actor?.rollOptions?.all || !stage?.rollOption) return;
+  const stageSlug = sluggify(stage.name) || "stage";
+  const effectSlug = item?.rollOptionSlug ?? item?.slug ?? sluggify(stage.baseName);
+  actor.rollOptions.all[`self:stage:${stageSlug}`] = true;
+  actor.rollOptions.all[`self:stage:${stageSlug}:${stage.value}`] = stage.value;
+  if (effectSlug) {
+    actor.rollOptions.all[`self:effect:${effectSlug}:stage`] = true;
+    actor.rollOptions.all[`self:effect:${effectSlug}:stage:${stage.value}`] = stage.value;
+  }
+}
+
+function formatStageCounterName(stage) {
+  return `${stage?.baseName ?? "Effect"} (${stageCounterSummary(stage)})`;
+}
+
+function stageCounterSummary(stage) {
+  const value = clampStageCounter(stage?.value, stage?.min ?? 0, stage?.max ?? 0);
+  const label = String(stage?.name ?? "").trim();
+  return label ? `${value} ${label}` : String(value);
+}
+
+function getStageCounterFlag(item) {
+  return item?.getFlag?.(MODULE_ID, FLAGS.stageCounter) ?? foundry.utils.getProperty(item, `flags.${MODULE_ID}.${FLAGS.stageCounter}`) ?? null;
+}
+
+async function setStageCounter(item, value) {
+  if (!item) return null;
+  const rule = getStageCounterRuleSource(item);
+  const stage = buildStageCounterData(rule ?? getStageCounterFlag(item), getStageCounterFlag(item), item._source?.name ?? item.name, { preserveValue: true });
+  stage.value = clampStageCounter(value, stage.min, stage.max);
+  return item.setFlag(MODULE_ID, FLAGS.stageCounter, stage);
 }
 
 function applyTemporaryInjuryData(actor) {
@@ -1733,6 +1945,17 @@ function scheduleTemporaryInjuryInjection(app, html) {
   }, 0);
 }
 
+function scheduleStageCounterInjection(app, html) {
+  window.setTimeout(() => {
+    try {
+      if (!isEnabled() || !app?.actor) return;
+      injectStageCounters(app, html);
+    } catch (error) {
+      warnThrottled("stage-counter-sheet", error);
+    }
+  }, 0);
+}
+
 function injectTemporaryInjuryIntoTemplate(path, html, data = {}) {
   try {
     if (!isEnabled() || typeof html !== "string" || !isActorSheetTemplate(path)) return html;
@@ -1760,6 +1983,7 @@ function scheduleTemporaryInjuryScan() {
     temporaryInjuryScanQueued = false;
     try {
       injectTemporaryInjuriesInOpenSheets();
+      injectStageCountersInOpenSheets();
     } catch (error) {
       warnThrottled("temporary-injury-scan", error);
     }
@@ -1779,12 +2003,78 @@ function injectTemporaryInjuriesInOpenSheets() {
   }
 }
 
+function injectStageCountersInOpenSheets() {
+  for (const app of Object.values(ui.windows ?? {})) {
+    if (!getSheetActor(app)?.items) continue;
+    injectStageCounters(app, app.element);
+  }
+
+  for (const root of document.querySelectorAll(".app.sheet.actor, .window-app.sheet.actor, .ptu.sheet.actor")) {
+    const app = getAppFromSheetRoot(root);
+    if (!getSheetActor(app, root)?.items) continue;
+    injectStageCounters(app, root);
+  }
+}
+
 function injectTemporaryInjuries(app, html) {
   const root = getSheetRoot(app, html);
   const actor = getSheetActor(app, root);
   if (!actor?.system?.health) return;
   injectTemporaryInjuryRow(root, actor);
   injectNonlethalHitRow(root, actor);
+}
+
+function injectStageCounters(app, html) {
+  const root = getSheetRoot(app, html);
+  const actor = getSheetActor(app, root);
+  if (!root || !actor?.items) return;
+  applyStageCounterData(actor);
+
+  for (const item of actor.items.filter((candidate) => candidate.type === "effect")) {
+    const stage = getStageCounterFlag(item);
+    if (!stage?.enabled) continue;
+    injectStageCounterControl(root, item, stage);
+  }
+}
+
+function injectStageCounterControl(root, item, stage) {
+  const row = root.querySelector(`li.effect-item[data-item-id="${escapeCss(item.id)}"], li.item.effect-item[data-item-id="${escapeCss(item.id)}"]`);
+  if (!row) return false;
+
+  const name = row.querySelector(".item-name h4");
+  if (name) name.textContent = formatStageCounterName(stage);
+
+  const existing = row.querySelector(".ptr-stage-counter");
+  const html = buildStageCounterControlHtml(stage);
+  if (existing) {
+    existing.outerHTML = html;
+    return true;
+  }
+
+  const controls = row.querySelector(".item-info .item-controls");
+  if (controls) {
+    controls.insertAdjacentHTML("beforebegin", html);
+    return true;
+  }
+  const info = row.querySelector(".item-info");
+  if (info) {
+    info.insertAdjacentHTML("beforeend", html);
+    return true;
+  }
+  return false;
+}
+
+function buildStageCounterControlHtml(stage) {
+  const value = clampStageCounter(stage.value, stage.min, stage.max);
+  const min = stageInteger(stage.min, 0);
+  const max = Math.max(min, stageInteger(stage.max, 6));
+  const name = escapeHtml(stage.name ?? "Stage");
+  return `<div class="ptr-stage-counter" style="display:flex;align-items:center;gap:3px;margin-left:auto;margin-right:4px;white-space:nowrap;" title="${escapeHtml(game.i18n.localize("PTR_STATUS.StageCounter.Label"))}">
+    <button type="button" data-ptr-stage-action="decrease" style="width:22px;height:22px;line-height:18px;padding:0;">-</button>
+    <input type="number" min="${min}" max="${max}" step="1" value="${value}" data-ptr-stage-input style="width:42px;height:22px;text-align:center;">
+    <span style="font-size:12px;">/ ${max} ${name}</span>
+    <button type="button" data-ptr-stage-action="increase" style="width:22px;height:22px;line-height:18px;padding:0;">+</button>
+  </div>`;
 }
 
 function injectTemporaryInjuryRow(root, actor) {
@@ -1868,6 +2158,13 @@ function getSheetActor(app, root = null) {
   return getActorFromSheetRoot(root);
 }
 
+function getStageCounterItemFromElement(element) {
+  const root = element?.closest?.(".app.sheet.actor, .window-app.sheet.actor, .ptu.sheet.actor");
+  const actor = getSheetActor(getAppFromSheetRoot(root), root);
+  const itemId = element?.closest?.("[data-item-id]")?.dataset?.itemId;
+  return actor?.items?.get?.(itemId) ?? null;
+}
+
 function getTemplateActor(data = {}) {
   const actor = data.actor ?? data.document ?? data.object;
   const ActorClass = CONFIG.Actor?.documentClass ?? CONFIG.PTU?.Actor?.documentClass;
@@ -1935,6 +2232,8 @@ function exposeApi() {
     getTemporaryInjuries,
     setNonlethalHits,
     getNonlethalHits,
+    setStageCounter,
+    getStageCounter: (item) => getStageCounterFlag(item),
     createConditionData,
     createEffectData
   };
@@ -2159,6 +2458,17 @@ function clampNonlethalHits(value) {
   return Math.max(0, Number.isFinite(number) ? number : 0);
 }
 
+function stageInteger(value, fallback) {
+  const number = Math.trunc(Number(value ?? fallback));
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function clampStageCounter(value, min = 0, max = 6) {
+  const low = stageInteger(min, 0);
+  const high = Math.max(low, stageInteger(max, 6));
+  return Math.clamp(stageInteger(value, low), low, high);
+}
+
 function getTickAmount(actor) {
   const maxHP = Number(actor?.system?.health?.max ?? 0);
   const tick = Number(actor?.system?.health?.tick ?? 0);
@@ -2266,4 +2576,9 @@ function escapeHtml(value) {
   const div = document.createElement("div");
   div.textContent = String(value ?? "");
   return div.innerHTML;
+}
+
+function escapeCss(value) {
+  if (globalThis.CSS?.escape instanceof Function) return CSS.escape(String(value ?? ""));
+  return String(value ?? "").replace(/["\\]/g, "\\$&");
 }

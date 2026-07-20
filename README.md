@@ -24,6 +24,7 @@ https://github.com/marcbenoitcote-star/ptr1e-status-afflictions/releases/latest/
 - Immunities for Ice-Type Frozen/Chilled and Ghost-Type Bleeding.
 - Double Strike, Five Strike, and Ten Strike Accuracy Roll automation with compact collapsible chat summaries.
 - Nonlethal move keyword automation that converts final damage into Nonlethal Hit and applies Fainted when the total exceeds Current HP.
+- A generic **Stage Counter** Rule Element for applied Effect items, with manual Actor-sheet +/- controls.
 
 ## Status item access
 
@@ -87,11 +88,38 @@ await game.ptrStatus.remove(actor, "bleeding");
 await game.ptrStatus.markHeavyShift(actor);
 await game.ptrStatus.setTemporaryInjuries(actor, 2);
 await game.ptrStatus.setNonlethalHits(actor, 1);
+await game.ptrStatus.setStageCounter(effectItem, 3);
 ```
 
 `markHeavyShift(actor)` makes the next Bleeding tick lose 2 Ticks instead of 1 Tick.
 `setTemporaryInjuries(actor, value)` stores a manual Temporary Injury count from 0 to 5.
 `setNonlethalHits(actor, value)` stores a manual Nonlethal Hit count from 0 upward.
+`setStageCounter(effectItem, value)` stores a manual stage value on an applied Effect item that has a Stage Counter rule.
+
+## Stage Counter Rule Element
+
+Effect items can add a **Stage Counter** Rule Element. When the Effect is applied to an Actor, the module creates a stage value on that owned Effect. The Actor sheet shows the Effect as `Effect Name (3 Tokens)` and adds manual `- / value / +` controls in the Effects tab.
+
+Example Rule Element:
+
+```json
+{
+  "key": "StageCounter",
+  "name": "Tokens",
+  "min": 0,
+  "max": 8,
+  "value": 0,
+  "rollOption": true
+}
+```
+
+Other Rule Elements on the same Effect can read the current value with:
+
+```text
+{item|flags.ptr1e-status-afflictions.stageCounter.value}
+```
+
+When `rollOption` is enabled, the actor also receives roll options such as `self:stage:tokens` and `self:stage:tokens:3`.
 
 ## Notes
 
@@ -119,10 +147,21 @@ The module deliberately keeps Mark and Coat source-specific effects flexible. Se
 - Roll a Double Strike move. Confirm the attack chat shows one green check per successful Accuracy Roll and one red cross per missed Accuracy Roll. Click the Strike summary bar to show/hide each roll result. Confirm one hit deals normal DB and two hits double the move's pre-STAB DB on the Damage Roll. Confirm only the first Accuracy Roll can crit.
 - Roll a Five Strike move. Confirm the first Accuracy Roll is the normal PTR attack roll, extra Accuracy Rolls stop after the first miss, each extra hit adds +2 DB, and the bonus caps at +8 DB.
 - Roll a Ten Strike move. Confirm it follows the same flow as Five Strike with up to 10 total Accuracy Rolls and a DB bonus cap of +16.
+- Create an Effect item with a Stage Counter rule. Apply it to an Actor and confirm the Effects tab shows the stage in parentheses plus manual +/- controls.
+- Set the Stage Counter max to 6 or 8, change the stage manually on the Actor sheet, and confirm the value clamps between min and max.
+- Use `{item|flags.ptr1e-status-afflictions.stageCounter.value}` in another Rule Element value and confirm it follows the owned Effect's current stage.
 - Run Burned, Poisoned, Badly Poisoned, Bleeding, Seeded, and weather/curse-like persistent damage against a Boss with multiple turns. Confirm loss triggers once per round, not once per boss turn.
 - Start a combatant turn with active managed afflictions. Confirm one compact chat card appears with expandable information and item links.
 
 ## Changelog
+
+### 0.3.13
+
+- Added a generic **Stage Counter** Rule Element for Effect items.
+- Stage Counter can be configured with a stage name, minimum, maximum, and initial value.
+- Applied Effects with Stage Counter display their current stage in parentheses on Actor sheets.
+- Actor Effects tab now provides manual +/- and direct number controls for Stage Counter values.
+- Stage Counter values are stored on the owned Effect item and can be referenced by other Rule Elements through the item flag path.
 
 ### 0.3.12
 

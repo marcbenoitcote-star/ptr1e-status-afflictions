@@ -1,0 +1,32 @@
+<div class="form-group">
+    <label class="short">{{localize "PTR_STATUS.StageCounter.Name"}}</label>
+    <input type="text" name="system.rules.{{index}}.name" value="{{rule.name}}" placeholder="{{localize "PTR_STATUS.StageCounter.DefaultName"}}" />
+</div>
+
+<div class="form-group">
+    <label class="short">{{localize "PTR_STATUS.StageCounter.Range"}}</label>
+    <div class="spaced-fields details-container-flex-row">
+        <label>
+            {{localize "PTR_STATUS.StageCounter.Min"}}
+            <input type="number" name="system.rules.{{index}}.min" value="{{rule.min}}" step="1" />
+        </label>
+        <label>
+            {{localize "PTR_STATUS.StageCounter.Max"}}
+            <input type="number" name="system.rules.{{index}}.max" value="{{rule.max}}" step="1" />
+        </label>
+        <label>
+            {{localize "PTR_STATUS.StageCounter.Initial"}}
+            <input type="number" name="system.rules.{{index}}.value" value="{{rule.value}}" step="1" />
+        </label>
+    </div>
+</div>
+
+<div class="form-group">
+    <label class="short">{{localize "PTR_STATUS.StageCounter.RollOption"}}</label>
+    <input type="checkbox" name="system.rules.{{index}}.rollOption" {{checked (notEqual rule.rollOption false)}} />
+</div>
+
+<div class="form-group">
+    <label class="short">{{localize "PTU.RuleEditor.General.Predicate"}}</label>
+    <input type="text" name="system.rules.{{index}}.predicate" value="{{json rule.predicate}}" />
+</div>
