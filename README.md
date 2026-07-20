@@ -22,6 +22,8 @@ https://github.com/marcbenoitcote-star/ptr1e-status-afflictions/releases/latest/
 - Boss action-denial assignment to one initiative count where the system exposes a current combatant.
 - Weakened duration and 3-round Boss cooldown.
 - Immunities for Ice-Type Frozen/Chilled and Ghost-Type Bleeding.
+- Double Strike, Five Strike, and Ten Strike Accuracy Roll automation with compact collapsible chat summaries.
+- Nonlethal move keyword automation that converts final damage into Nonlethal Hit and applies Fainted when the total exceeds Current HP.
 
 ## Status item access
 
@@ -112,14 +114,23 @@ The module deliberately keeps Mark and Coat source-specific effects flexible. Se
 - With Infatuation, attack without the Crush and confirm -5 damage; attack the Crush and confirm the Attack/Special Attack contribution is reduced.
 - With Seeded, end the seeded actor's turn and confirm it loses 1 Tick while the linked source recovers the HP lost.
 - On a Trainer and a Pokemon sheet, open the Combat tab and confirm Temporary Injuries appears below Injuries, caps at 5, and lowers Max HP like normal Injuries without changing the normal Injury field.
-- On a Trainer and a Pokemon sheet, open the Stats tab and confirm Nonlethal Hit appears below Temp HP, saves after editing, and remains visible after closing and reopening the sheet.
-- Roll a Double Strike move. Confirm the attack chat shows one green check per successful Accuracy Roll and one red cross per missed Accuracy Roll. Confirm one hit deals normal DB and two hits double the move's pre-STAB DB. Confirm only the first Accuracy Roll can crit.
+- On a Trainer and a Pokemon sheet, open the Stats tab and confirm Nonlethal Hit appears centered below the HP row, does not wrap awkwardly, saves after editing, and remains visible after closing and reopening the sheet.
+- Roll a damaging move with the **Nonlethal** keyword. Confirm Current HP and Temp HP do not decrease, Nonlethal Hit increases by the final applied damage amount, and Fainted is applied when Nonlethal Hit exceeds Current HP.
+- Roll a Double Strike move. Confirm the attack chat shows one green check per successful Accuracy Roll and one red cross per missed Accuracy Roll. Click the Strike summary bar to show/hide each roll result. Confirm one hit deals normal DB and two hits double the move's pre-STAB DB on the Damage Roll. Confirm only the first Accuracy Roll can crit.
 - Roll a Five Strike move. Confirm the first Accuracy Roll is the normal PTR attack roll, extra Accuracy Rolls stop after the first miss, each extra hit adds +2 DB, and the bonus caps at +8 DB.
 - Roll a Ten Strike move. Confirm it follows the same flow as Five Strike with up to 10 total Accuracy Rolls and a DB bonus cap of +16.
 - Run Burned, Poisoned, Badly Poisoned, Bleeding, Seeded, and weather/curse-like persistent damage against a Boss with multiple turns. Confirm loss triggers once per round, not once per boss turn.
 - Start a combatant turn with active managed afflictions. Confirm one compact chat card appears with expandable information and item links.
 
 ## Changelog
+
+### 0.3.12
+
+- Centered the **Nonlethal Hit** sheet field below the HP row on Trainer and Pokemon Stats tabs.
+- Added **Nonlethal** move keyword automation: damage is converted into Nonlethal Hit instead of reducing Current HP or Temp HP.
+- Nonlethal Hit now applies PTR's native **Fainted** condition when the total exceeds Current HP.
+- Strike summaries in attack chat are now clickable/collapsible and include per-roll details.
+- Fixed Double Strike damage rolls so two confirmed hits double the move's pre-STAB Damage Base during the PTR Damage Roll.
 
 ### 0.3.11
 

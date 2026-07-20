@@ -27,6 +27,11 @@ const STRIKE_KINDS = {
   five: { label: "Five Strike", maxRolls: 5, mode: "add", maxBonus: 8 },
   ten: { label: "Ten Strike", maxRolls: 10, mode: "add", maxBonus: 16 }
 };
+const FAINTED_CONDITION = {
+  id: "fainted",
+  name: "PTU.ConditionFainted",
+  img: "systems/ptu/static/images/conditions/Fainted.svg"
+};
 const throttledErrors = new Map();
 const movementMessages = new Map();
 let temporaryInjuryObserver = null;
@@ -606,9 +611,98 @@ function patchActorApplyDamage() {
       if (optionSet.has("origin:condition:weakened") && params.effectiveness !== -1) {
         params = { ...params, effectiveness: (params.effectiveness ?? 1) * 0.5 };
       }
+      if (isNonlethalDamage(params.item, optionSet)) return applyNonlethalDamage(this, params);
     }
     return original.call(this, params);
   };
+}
+
+async function applyNonlethalDamage(contextActor, params = {}) {
+  const targetActor = params.token?.actor ?? contextActor;
+  const amount = calculateNonlethalDamage(contextActor, params);
+  const label = params.item?.name ?? game.i18n.localize("PTR_STATUS.NonlethalHits.Label");
+
+  if (amount <= 0) {
+    await post("PTR_STATUS.Chat.NonlethalNoDamage", { actor: targetActor.link ?? targetActor.name, label }, targetActor);
+    return contextActor;
+  }
+
+  const total = getNonlethalHits(targetActor) + amount;
+  await setNonlethalHits(targetActor, total);
+  await post("PTR_STATUS.Chat.NonlethalDamage", {
+    actor: targetActor.link ?? targetActor.name,
+    amount,
+    total: clampNonlethalHits(total),
+    label
+  }, targetActor);
+
+  const currentHP = getCurrentHealth(targetActor);
+  if (clampNonlethalHits(total) > currentHP) {
+    const created = await ensureFaintedCondition(targetActor);
+    if (created) {
+      await post("PTR_STATUS.Chat.NonlethalFainted", {
+        actor: targetActor.link ?? targetActor.name,
+        total: clampNonlethalHits(total),
+        hp: currentHP
+      }, targetActor);
+    }
+  }
+
+  return contextActor;
+}
+
+function calculateNonlethalDamage(actor, params = {}) {
+  const health = actor?.system?.health;
+  if (!health) return 0;
+
+  const item = params.item;
+  const damage = params.damage;
+  const rollOptions = normalizeRollOptions(params.rollOptions);
+  let effectiveness = params.effectiveness;
+  const flatDamage = effectiveness === -1;
+  if (flatDamage) effectiveness = 1;
+
+  const currentDamage = Number(typeof damage === "number" ? damage : damage?.total);
+  if (!Number.isFinite(currentDamage) || currentDamage <= 0) return 0;
+
+  const defense = (() => {
+    if (flatDamage) return 0;
+    const overwrite = rollOptions.find((option) => String(option).startsWith("item:overwrite:defense"));
+    if (overwrite) {
+      const stat = String(overwrite).replace(/(item:overwrite:defense:)/, "");
+      return Number(actor.system?.stats?.[stat]?.total ?? 0);
+    }
+    if (item?.system?.category === "Physical") return Number(actor.system?.stats?.def?.total ?? 0);
+    if (item?.system?.category === "Special") return Number(actor.system?.stats?.spdef?.total ?? 0);
+    return 0;
+  })();
+  const damageAbsorbedByDefense = Math.min(currentDamage, Math.max(0, defense));
+
+  const damageReduction = (() => {
+    if (flatDamage) return 0;
+    if (item?.system?.category === "Physical") return Number(actor.system?.modifiers?.damageReduction?.physical?.total ?? 0);
+    if (item?.system?.category === "Special") return Number(actor.system?.modifiers?.damageReduction?.special?.total ?? 0);
+    return 0;
+  })();
+  const damageAbsorbedByReduction = Math.min(currentDamage - damageAbsorbedByDefense, Math.max(0, damageReduction));
+  const reducedDamage = currentDamage - damageAbsorbedByDefense - damageAbsorbedByReduction;
+
+  const finalDamage = (() => {
+    if (typeof damage === "number") {
+      if (params.skipIWR || flatDamage) return currentDamage;
+      return Math.max(reducedDamage, 1);
+    }
+    if (params.skipIWR || flatDamage || !(actor.applyIWR instanceof Function)) return currentDamage;
+    return Number(actor.applyIWR({
+      actor,
+      damage: { ...damage, reduced: reducedDamage },
+      item,
+      effectiveness,
+      rollOptions
+    })?.finalDamage ?? 0);
+  })();
+
+  return Math.max(0, Math.trunc(finalDamage <= 0 ? 0 : Math.max(1, finalDamage)));
 }
 
 function patchConditionTurnEnd() {
@@ -864,20 +958,40 @@ function patchStrikeAttackActions(actor) {
         if (!adjustment) return original.call(this, params);
 
         const move = action.item;
-        const originalDamageBase = move.system.damageBase;
-        const adjustedDamageBase = getAdjustedStrikeDamageBase(originalDamageBase, adjustment);
-        if (adjustedDamageBase === null) return original.call(this, params);
-
-        try {
-          foundry.utils.setProperty(move, "system.damageBase", adjustedDamageBase);
-          return await original.call(this, params);
-        } finally {
-          foundry.utils.setProperty(move, "system.damageBase", originalDamageBase);
-        }
+        return withAdjustedStrikeDamageBase(move, adjustment, () => original.call(this, params));
       };
       patched[`${MODULE_ID}StrikeDamage`] = true;
       action.damage = patched;
     }
+  }
+}
+
+async function withAdjustedStrikeDamageBase(move, adjustment, callback) {
+  if (!move || !(callback instanceof Function)) return callback?.();
+
+  const originalDamageBase = move.damageBase;
+  const adjustedPreStab = getAdjustedStrikeDamageBase(originalDamageBase?.preStab ?? move.system?.damageBase, adjustment);
+  if (adjustedPreStab === null) return callback();
+
+  const stabBonus = Math.max(0, Number(originalDamageBase?.postStab ?? adjustedPreStab) - Number(originalDamageBase?.preStab ?? adjustedPreStab));
+  const adjustedDamageBase = {
+    preStab: adjustedPreStab,
+    postStab: adjustedPreStab + stabBonus,
+    isStab: stabBonus > 0
+  };
+
+  const hadOwnDescriptor = Object.prototype.hasOwnProperty.call(move, "damageBase");
+  const ownDescriptor = Object.getOwnPropertyDescriptor(move, "damageBase");
+  Object.defineProperty(move, "damageBase", {
+    configurable: true,
+    get: () => adjustedDamageBase
+  });
+
+  try {
+    return await callback();
+  } finally {
+    if (hadOwnDescriptor && ownDescriptor) Object.defineProperty(move, "damageBase", ownDescriptor);
+    else delete move.damageBase;
   }
 }
 
@@ -1065,26 +1179,49 @@ function buildStrikeSummaryHtml(strike) {
     : strike.damage.bonus > 0
       ? `DB +${strike.damage.bonus}`
       : "DB normal";
-  const rows = strike.targets.map((target) => {
-    const actor = game.actors?.get(target.actorId);
-    const name = escapeHtml(target.name ?? actor?.name ?? target.actorId ?? target.actor);
-    const icons = target.rolls.map((roll) => {
-      const color = roll.hit ? "#15803d" : "#b91c1c";
-      const symbol = roll.hit ? "&#10003;" : "&#10007;";
-      const title = `Roll ${roll.index}: ${roll.total} vs ${roll.dc}${roll.first ? " (first accuracy)" : ""}`;
-      return `<span title="${escapeHtml(title)}" style="display:inline-block;margin-right:3px;color:${color};font-weight:700;font-size:15px;">${symbol}</span>`;
-    }).join("");
-    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px;">
-      <span>${name}</span>
-      <span>${icons}</span>
-      <small>${target.hitCount} hit / ${target.missCount} miss</small>
-    </div>`;
-  }).join("");
+  const rows = strike.targets.map((target) => buildStrikeTargetSummaryHtml(target)).join("");
+  const details = strike.targets.map((target) => buildStrikeTargetDetailsHtml(target)).join("");
 
-  return `<section class="ptr-status-strike-summary" style="margin-top:6px;padding:5px 7px;border:1px solid #999;border-radius:4px;background:#f7f3e8;">
-    <div style="display:flex;justify-content:space-between;gap:8px;"><strong>${escapeHtml(strike.label)}</strong><span>${escapeHtml(damageText)}</span></div>
-    ${rows}
-  </section>`;
+  return `<details class="ptr-status-strike-summary" style="margin-top:6px;padding:5px 7px;border:1px solid #999;border-radius:4px;background:#f7f3e8;">
+    <summary style="cursor:pointer;list-style:none;">
+      <div style="display:flex;justify-content:space-between;gap:8px;"><strong>${escapeHtml(strike.label)}</strong><span>${escapeHtml(damageText)}</span></div>
+      ${rows}
+    </summary>
+    <div style="margin-top:5px;padding-top:5px;border-top:1px solid #c8c0ad;">
+      ${details}
+    </div>
+  </details>`;
+}
+
+function buildStrikeTargetSummaryHtml(target) {
+  const actor = game.actors?.get(target.actorId);
+  const name = escapeHtml(target.name ?? actor?.name ?? target.actorId ?? target.actor);
+  const icons = target.rolls.map((roll) => {
+    const color = roll.hit ? "#15803d" : "#b91c1c";
+    const symbol = roll.hit ? "&#10003;" : "&#10007;";
+    const title = `Roll ${roll.index}: ${roll.total} vs ${roll.dc}${roll.first ? " (first accuracy)" : ""}`;
+    return `<span title="${escapeHtml(title)}" style="display:inline-block;margin-right:3px;color:${color};font-weight:700;font-size:15px;">${symbol}</span>`;
+  }).join("");
+  return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px;">
+    <span>${name}</span>
+    <span>${icons}</span>
+    <small>${target.hitCount} hit / ${target.missCount} miss</small>
+  </div>`;
+}
+
+function buildStrikeTargetDetailsHtml(target) {
+  const actor = game.actors?.get(target.actorId);
+  const name = escapeHtml(target.name ?? actor?.name ?? target.actorId ?? target.actor);
+  const rolls = target.rolls.map((roll) => {
+    const symbol = roll.hit ? "&#10003;" : "&#10007;";
+    const color = roll.hit ? "#15803d" : "#b91c1c";
+    const suffix = roll.first ? " - first accuracy" : "";
+    return `<li style="margin:1px 0;"><span style="color:${color};font-weight:700;">${symbol}</span> Roll ${roll.index}: ${roll.natural} natural / ${roll.total} total vs ${roll.dc}${suffix}</li>`;
+  }).join("");
+  return `<div style="margin:3px 0;">
+    <strong>${name}</strong>
+    <ul style="margin:2px 0 0 1rem;padding:0;">${rolls}</ul>
+  </div>`;
 }
 
 async function getStrikeTargetName(actorUuid, tokenUuid) {
@@ -1121,6 +1258,38 @@ function getMoveKeywordSlugs(item) {
     ...String(item?.system?.range ?? "").split(",")
   ];
   return new Set(values.map(sluggify).filter(Boolean));
+}
+
+function isNonlethalDamage(item, optionSet = new Set()) {
+  if (getMoveKeywordSlugs(item).has("nonlethal")) return true;
+  for (const option of optionSet) {
+    const text = String(option);
+    if (text === "move:nonlethal" || text === "item:nonlethal" || text === "attack:nonlethal") return true;
+    if (text === "move:range:nonlethal" || text === "item:range:nonlethal" || text === "attack:range:nonlethal") return true;
+  }
+  return false;
+}
+
+async function ensureFaintedCondition(actor) {
+  if (!actor || hasCondition(actor, "fainted")) return false;
+  try {
+    const ConditionClass = CONFIG.PTU?.Item?.documentClasses?.condition;
+    if (ConditionClass?.FromEffects instanceof Function) {
+      const conditions = await ConditionClass.FromEffects([FAINTED_CONDITION]);
+      if (conditions?.length) {
+        await actor.createEmbeddedDocuments("Item", conditions);
+        return true;
+      }
+    }
+    await actor.createEmbeddedDocuments("Item", [createConditionData("fainted", {
+      name: game.i18n.localize(FAINTED_CONDITION.name),
+      img: FAINTED_CONDITION.img
+    })]);
+    return true;
+  } catch (error) {
+    warnThrottled("nonlethal-fainted", error);
+    return false;
+  }
 }
 
 function patchTemplateRendering() {
@@ -1662,7 +1831,7 @@ function injectNonlethalHitRow(root, actor) {
   if (!healthBody?.parentElement) return false;
 
   const row = document.createElement("div");
-  row.className = "ptr-nonlethal-hits-row swsh-body d-flex flex-row center-text justify-content-between";
+  row.className = "ptr-nonlethal-hits-row swsh-body d-flex flex-row center-text justify-content-center";
   row.innerHTML = buildNonlethalHitRowHtml(getNonlethalHits(actor));
   healthBody.insertAdjacentElement("afterend", row);
   return true;
@@ -1670,12 +1839,10 @@ function injectNonlethalHitRow(root, actor) {
 
 function buildNonlethalHitRowHtml(nonlethalHits) {
   return `
-    <div class="fb-25">
-      <label>${escapeHtml(game.i18n.localize("PTR_STATUS.NonlethalHits.Label"))}</label>
-      <input name="flags.${MODULE_ID}.${FLAGS.nonlethalHits}" type="number" min="0" step="1" value="${nonlethalHits}" data-dtype="Number" data-ptr-nonlethal-hits>
-    </div>
-    <div class="fb-35"></div>
-    <div class="fb-25"></div>`;
+    <div style="flex:0 0 45%;max-width:180px;margin:0 auto;">
+      <label style="display:block;white-space:nowrap;text-align:center;">${escapeHtml(game.i18n.localize("PTR_STATUS.NonlethalHits.Label"))}</label>
+      <input name="flags.${MODULE_ID}.${FLAGS.nonlethalHits}" type="number" min="0" step="1" value="${nonlethalHits}" data-dtype="Number" data-ptr-nonlethal-hits style="width:100%;text-align:center;">
+    </div>`;
 }
 
 function getSheetRoot(app, html) {
@@ -1961,6 +2128,11 @@ async function setTemporaryInjuries(actor, value) {
 
 function getNonlethalHits(actor) {
   return clampNonlethalHits(actor?.getFlag?.(MODULE_ID, FLAGS.nonlethalHits) ?? actor?.system?.health?.nonlethalHits ?? 0);
+}
+
+function getCurrentHealth(actor) {
+  const value = Number(actor?.system?.health?.value ?? 0);
+  return Number.isFinite(value) ? value : 0;
 }
 
 async function setNonlethalHits(actor, value) {
