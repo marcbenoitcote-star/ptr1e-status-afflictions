@@ -84,10 +84,12 @@ await game.ptrStatus.apply(actor, "weakened");
 await game.ptrStatus.remove(actor, "bleeding");
 await game.ptrStatus.markHeavyShift(actor);
 await game.ptrStatus.setTemporaryInjuries(actor, 2);
+await game.ptrStatus.setNonlethalHits(actor, 1);
 ```
 
 `markHeavyShift(actor)` makes the next Bleeding tick lose 2 Ticks instead of 1 Tick.
 `setTemporaryInjuries(actor, value)` stores a manual Temporary Injury count from 0 to 5.
+`setNonlethalHits(actor, value)` stores a manual Nonlethal Hit count from 0 upward.
 
 ## Notes
 
@@ -110,10 +112,19 @@ The module deliberately keeps Mark and Coat source-specific effects flexible. Se
 - With Infatuation, attack without the Crush and confirm -5 damage; attack the Crush and confirm the Attack/Special Attack contribution is reduced.
 - With Seeded, end the seeded actor's turn and confirm it loses 1 Tick while the linked source recovers the HP lost.
 - On a Trainer and a Pokemon sheet, open the Combat tab and confirm Temporary Injuries appears below Injuries, caps at 5, and lowers Max HP like normal Injuries without changing the normal Injury field.
+- On a Trainer and a Pokemon sheet, open the Stats tab and confirm Nonlethal Hit appears below Temp HP, saves after editing, and remains visible after closing and reopening the sheet.
 - Run Burned, Poisoned, Badly Poisoned, Bleeding, Seeded, and weather/curse-like persistent damage against a Boss with multiple turns. Confirm loss triggers once per round, not once per boss turn.
 - Start a combatant turn with active managed afflictions. Confirm one compact chat card appears with expandable information and item links.
 
 ## Changelog
+
+### 0.3.10
+
+- Added a manual **Nonlethal Hit** field below Temp HP on compact Trainer and Pokemon Stats tabs.
+- Nonlethal Hit values are stored on module flags and exposed at runtime as `actor.system.health.nonlethalHits` for later automation work.
+- Actor sheet support now installs during Foundry `init` as well as `ready`, so the module sheet templates are registered before Foundry resolves default actor sheets.
+- Added macro helpers `getNonlethalHits(actor)` and `setNonlethalHits(actor, value)`.
+- Reviewed PTR's current Five Strike automation path: move keywords create `move:five-strike` roll options, damage rolls convert a `1d8` result into 1-5 strikes, and the strike count is passed to damage chat rendering.
 
 ### 0.3.9
 

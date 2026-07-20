@@ -5,6 +5,7 @@ const FLAGS = {
   heavyShiftRound: "heavyShiftRound",
   weakenedImmuneUntil: "weakenedImmuneUntil",
   temporaryInjuries: "temporaryInjuries",
+  nonlethalHits: "nonlethalHits",
   patched: "patched"
 };
 
@@ -174,6 +175,12 @@ const CONDITION_DEFINITIONS = {
 Hooks.once("init", () => {
   if (game.system.id !== "ptu") return;
   registerSettings();
+  installActorSheetSupport();
+});
+
+Hooks.once("setup", () => {
+  if (game.system.id !== "ptu") return;
+  installActorSheetSupport();
 });
 
 Hooks.once("ready", () => {
@@ -250,9 +257,8 @@ function registerStatusEffects() {
 }
 
 function patchPTR() {
+  ensureModuleConfig();
   if (CONFIG.PTU?.[MODULE_ID]?.[FLAGS.patched]) return;
-  CONFIG.PTU ??= {};
-  CONFIG.PTU[MODULE_ID] ??= {};
   CONFIG.PTU[MODULE_ID][FLAGS.patched] = true;
 
   patchActorCreateEmbedded();
@@ -264,9 +270,7 @@ function patchPTR() {
   patchConditionTurnEnd();
   patchParalysisHandler();
   patchConditionFromEffects();
-  registerModuleActorSheets();
-  patchActorSheets();
-  patchTemplateRendering();
+  installActorSheetSupport();
   registerMovementHooks();
   registerLinkedConditionCleanup();
   registerActorSheetHooks();
@@ -653,14 +657,31 @@ function patchConditionFromEffects() {
   };
 }
 
+function ensureModuleConfig() {
+  CONFIG.PTU ??= {};
+  CONFIG.PTU[MODULE_ID] ??= {};
+  return CONFIG.PTU[MODULE_ID];
+}
+
+function installActorSheetSupport() {
+  ensureModuleConfig();
+  if (!CONFIG.PTU?.Actor?.sheetClasses) return false;
+  registerModuleActorSheets();
+  patchActorSheets();
+  patchTemplateRendering();
+  return true;
+}
+
 function registerModuleActorSheets() {
+  ensureModuleConfig();
+  if (!CONFIG.PTU?.Actor?.sheetClasses) return false;
   const registry = foundry.documents?.collections?.Actors;
   const CharacterBase = CONFIG.PTU.Actor.sheetClasses?.character;
   const PokemonBase = CONFIG.PTU.Actor.sheetClasses?.pokemon;
   if (!registry || CONFIG.PTU[MODULE_ID].sheetsRegistered) {
     patchActorSheetTemplate(CharacterBase, SHEET_TEMPLATES.character);
     patchActorSheetTemplate(PokemonBase, SHEET_TEMPLATES.pokemon);
-    return;
+    return false;
   }
 
   CONFIG.PTU[MODULE_ID].originalSheetClasses = {
@@ -706,6 +727,8 @@ function registerModuleActorSheets() {
   }
 
   CONFIG.PTU[MODULE_ID].sheetsRegistered = true;
+  console.log(`${MODULE_ID} | Registered PTR Status actor sheets.`);
+  return true;
 }
 
 function patchActorSheetTemplate(SheetClass, template) {
@@ -726,11 +749,11 @@ function patchActorSheetTemplate(SheetClass, template) {
 function getActorSheetClasses() {
   const originals = CONFIG.PTU?.[MODULE_ID]?.originalSheetClasses ?? {};
   return new Set([
-    CONFIG.PTU.Actor.sheetClasses?.character,
-    CONFIG.PTU.Actor.sheetClasses?.pokemon,
+    CONFIG.PTU?.Actor?.sheetClasses?.character,
+    CONFIG.PTU?.Actor?.sheetClasses?.pokemon,
     originals.character,
     originals.pokemon,
-    CONFIG.PTU.Actor.sheetClass
+    CONFIG.PTU?.Actor?.sheetClass
   ].filter(Boolean));
 }
 
@@ -774,11 +797,13 @@ function syncTemporaryInjurySheetData(data, actor) {
     if (!candidate?.system?.health) continue;
     candidate.system.health.temporaryInjuries = health.temporaryInjuries;
     candidate.system.health.effectiveInjuries = health.effectiveInjuries;
+    candidate.system.health.nonlethalHits = health.nonlethalHits;
   }
 
   if (data?.data?.health) {
     data.data.health.temporaryInjuries = health.temporaryInjuries;
     data.data.health.effectiveInjuries = health.effectiveInjuries;
+    data.data.health.nonlethalHits = health.nonlethalHits;
   }
 }
 
@@ -857,31 +882,50 @@ function registerActorSheetHooks() {
 
 function registerTemporaryInjuryHooks() {
   Hooks.on("preUpdateActor", (_actor, changed) => {
-    const flagPath = `flags.${MODULE_ID}.${FLAGS.temporaryInjuries}`;
-    const systemPath = "system.health.temporaryInjuries";
-    const flagValue = foundry.utils.getProperty(changed, flagPath);
-    const systemValue = foundry.utils.getProperty(changed, systemPath);
-    const value = systemValue ?? flagValue;
-    if (value === undefined) return;
+    const temporaryFlagPath = `flags.${MODULE_ID}.${FLAGS.temporaryInjuries}`;
+    const temporarySystemPath = "system.health.temporaryInjuries";
+    const temporaryFlagValue = foundry.utils.getProperty(changed, temporaryFlagPath);
+    const temporarySystemValue = foundry.utils.getProperty(changed, temporarySystemPath);
+    const temporaryValue = temporarySystemValue ?? temporaryFlagValue;
+    if (temporaryValue !== undefined) {
+      const clamped = clampTemporaryInjuries(temporaryValue);
+      foundry.utils.setProperty(changed, temporaryFlagPath, clamped);
+      foundry.utils.setProperty(changed, temporarySystemPath, clamped);
+    }
 
-    const clamped = clampTemporaryInjuries(value);
-    foundry.utils.setProperty(changed, flagPath, clamped);
-    foundry.utils.setProperty(changed, systemPath, clamped);
+    const nonlethalFlagPath = `flags.${MODULE_ID}.${FLAGS.nonlethalHits}`;
+    const nonlethalSystemPath = "system.health.nonlethalHits";
+    const nonlethalFlagValue = foundry.utils.getProperty(changed, nonlethalFlagPath);
+    const nonlethalSystemValue = foundry.utils.getProperty(changed, nonlethalSystemPath);
+    const nonlethalValue = nonlethalSystemValue ?? nonlethalFlagValue;
+    if (nonlethalValue !== undefined) {
+      const clamped = clampNonlethalHits(nonlethalValue);
+      foundry.utils.setProperty(changed, nonlethalFlagPath, clamped);
+      foundry.utils.setProperty(changed, nonlethalSystemPath, clamped);
+    }
   });
 }
 
 function registerTemporaryInjuryInputListener() {
   document.addEventListener("change", async (event) => {
-    const input = event.target?.closest?.("[data-ptr-temporary-injuries]");
+    const temporaryInput = event.target?.closest?.("[data-ptr-temporary-injuries]");
+    const nonlethalInput = event.target?.closest?.("[data-ptr-nonlethal-hits]");
+    const input = temporaryInput ?? nonlethalInput;
     if (!input) return;
 
     try {
       const root = input.closest(".app.sheet.actor, .window-app.sheet.actor, .ptu.sheet.actor");
       const actor = getSheetActor(getAppFromSheetRoot(root), root);
       if (!actor) return;
-      const value = clampTemporaryInjuries(input.value);
-      input.value = value;
-      await setTemporaryInjuries(actor, value);
+      if (temporaryInput) {
+        const value = clampTemporaryInjuries(input.value);
+        input.value = value;
+        await setTemporaryInjuries(actor, value);
+      } else {
+        const value = clampNonlethalHits(input.value);
+        input.value = value;
+        await setNonlethalHits(actor, value);
+      }
       scheduleTemporaryInjuryScan();
     } catch (error) {
       warnThrottled("temporary-injury-input", error);
@@ -1092,9 +1136,11 @@ function applyTemporaryInjuryData(actor) {
   const temporary = getTemporaryInjuries(actor);
   const normal = Number(health.injuries ?? 0);
   const effective = Math.max(0, normal + temporary);
+  const nonlethalHits = getNonlethalHits(actor);
 
   health.temporaryInjuries = temporary;
   health.effectiveInjuries = effective;
+  health.nonlethalHits = nonlethalHits;
 
   if (effective > 0 && Number.isFinite(Number(health.total))) {
     health.max = calculateInjuredMaxHealth(system, effective);
@@ -1113,6 +1159,7 @@ function applyTemporaryInjuryData(actor) {
   actor.attributes.health.max = health.max;
   actor.attributes.health.injuries = effective;
   actor.attributes.health.temporaryInjuries = temporary;
+  actor.attributes.health.nonlethalHits = nonlethalHits;
 }
 
 function applyBossEvasionPenalty(actor) {
@@ -1207,7 +1254,9 @@ function injectTemporaryInjuryIntoTemplate(path, html, data = {}) {
     const actor = getTemplateActor(data);
     const wrapper = document.createElement("div");
     wrapper.innerHTML = html;
-    const injected = injectTemporaryInjuryRow(wrapper, actor);
+    const temporaryInjected = injectTemporaryInjuryRow(wrapper, actor);
+    const nonlethalInjected = injectNonlethalHitRow(wrapper, actor);
+    const injected = temporaryInjected || nonlethalInjected;
     return injected ? wrapper.innerHTML : html;
   } catch (error) {
     warnThrottled("temporary-injury-template", error);
@@ -1250,6 +1299,7 @@ function injectTemporaryInjuries(app, html) {
   const actor = getSheetActor(app, root);
   if (!actor?.system?.health) return;
   injectTemporaryInjuryRow(root, actor);
+  injectNonlethalHitRow(root, actor);
 }
 
 function injectTemporaryInjuryRow(root, actor) {
@@ -1284,6 +1334,32 @@ function buildTemporaryInjuryRowHtml(columnClass, temporary, effective) {
       <label>${escapeHtml(game.i18n.localize("PTR_STATUS.TemporaryInjuries.Effective"))}</label>
       <input type="number" value="${effective}" disabled>
     </div>`;
+}
+
+function injectNonlethalHitRow(root, actor) {
+  if (!root || root.querySelector(".ptr-nonlethal-hits-row")) return false;
+
+  const tempHpInput = root.querySelector('input[name="system.tempHp.value"]');
+  if (!tempHpInput) return false;
+
+  const healthBody = tempHpInput.closest(".swsh-body") ?? tempHpInput.closest(".d-flex");
+  if (!healthBody?.parentElement) return false;
+
+  const row = document.createElement("div");
+  row.className = "ptr-nonlethal-hits-row swsh-body d-flex flex-row center-text justify-content-between";
+  row.innerHTML = buildNonlethalHitRowHtml(getNonlethalHits(actor));
+  healthBody.insertAdjacentElement("afterend", row);
+  return true;
+}
+
+function buildNonlethalHitRowHtml(nonlethalHits) {
+  return `
+    <div class="fb-25">
+      <label>${escapeHtml(game.i18n.localize("PTR_STATUS.NonlethalHits.Label"))}</label>
+      <input name="flags.${MODULE_ID}.${FLAGS.nonlethalHits}" type="number" min="0" step="1" value="${nonlethalHits}" data-dtype="Number" data-ptr-nonlethal-hits>
+    </div>
+    <div class="fb-35"></div>
+    <div class="fb-25"></div>`;
 }
 
 function getSheetRoot(app, html) {
@@ -1374,6 +1450,8 @@ function exposeApi() {
     markHeavyShift: async (actor) => actor?.setFlag?.(MODULE_ID, FLAGS.heavyShiftRound, game.combat?.round ?? 0),
     setTemporaryInjuries,
     getTemporaryInjuries,
+    setNonlethalHits,
+    getNonlethalHits,
     createConditionData,
     createEffectData
   };
@@ -1565,9 +1643,32 @@ async function setTemporaryInjuries(actor, value) {
   }
 }
 
+function getNonlethalHits(actor) {
+  return clampNonlethalHits(actor?.getFlag?.(MODULE_ID, FLAGS.nonlethalHits) ?? actor?.system?.health?.nonlethalHits ?? 0);
+}
+
+async function setNonlethalHits(actor, value) {
+  if (!actor) return null;
+  const clamped = clampNonlethalHits(value);
+  try {
+    return await actor.update({
+      [`flags.${MODULE_ID}.${FLAGS.nonlethalHits}`]: clamped,
+      "system.health.nonlethalHits": clamped
+    });
+  } catch (error) {
+    warnThrottled("nonlethal-hit-system-update", error);
+    return actor.setFlag(MODULE_ID, FLAGS.nonlethalHits, clamped);
+  }
+}
+
 function clampTemporaryInjuries(value) {
   const number = Math.trunc(Number(value ?? 0));
   return Math.clamp(Number.isFinite(number) ? number : 0, 0, MAX_TEMPORARY_INJURIES);
+}
+
+function clampNonlethalHits(value) {
+  const number = Math.trunc(Number(value ?? 0));
+  return Math.max(0, Number.isFinite(number) ? number : 0);
 }
 
 function getTickAmount(actor) {

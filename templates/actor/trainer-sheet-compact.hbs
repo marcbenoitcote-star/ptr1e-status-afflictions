@@ -119,6 +119,16 @@
                                     <div class="progress-bar p{{actor.system.health.percent}}" id="progressBar"></div>
                                 </div>
                             </div>
+                            <div class="ptr-nonlethal-hits-row swsh-body d-flex flex-row center-text justify-content-between">
+                                <div class="fb-25">
+                                    <label for="flags.ptr1e-status-afflictions.nonlethalHits">{{localize "PTR_STATUS.NonlethalHits.Label"}}</label>
+                                    <input name="flags.ptr1e-status-afflictions.nonlethalHits" type="number" min="0"
+                                        step="1" value="{{actor.system.health.nonlethalHits}}" data-dtype="Number"
+                                        data-ptr-nonlethal-hits />
+                                </div>
+                                <div class="fb-35"></div>
+                                <div class="fb-25"></div>
+                            </div>
                         </div>
                         <div class="mb-2">
                             <img class="profile-img" src="{{actor.img}}" data-edit="img" title="{{actor.name}}" />

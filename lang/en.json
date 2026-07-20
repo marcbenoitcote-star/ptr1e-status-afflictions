@@ -35,6 +35,7 @@
   "PTR_STATUS.Prompt.SeededSource": "Choose the source of Seeded.",
   "PTR_STATUS.TemporaryInjuries.Label": "Temporary Injuries",
   "PTR_STATUS.TemporaryInjuries.Effective": "Effective Injuries",
+  "PTR_STATUS.NonlethalHits.Label": "Nonlethal Hit",
   "PTR_STATUS.Reason.GhostBleeding": "Ghost-Type targets are immune to Bleeding.",
   "PTR_STATUS.Reason.IceFrozen": "Ice-Type targets are immune to Frozen/Chilled.",
   "PTR_STATUS.Reason.WeakenedCooldown": "Boss Weakened immunity is still active.",
