@@ -22,6 +22,11 @@ const SHEET_TEMPLATES = {
   character: `modules/${MODULE_ID}/templates/actor/trainer-sheet-compact.hbs`,
   pokemon: `modules/${MODULE_ID}/templates/actor/pokemon-sheet-compact.hbs`
 };
+const STRIKE_KINDS = {
+  double: { label: "Double Strike", maxRolls: 2, mode: "double" },
+  five: { label: "Five Strike", maxRolls: 5, mode: "add", maxBonus: 8 },
+  ten: { label: "Ten Strike", maxRolls: 10, mode: "add", maxBonus: 16 }
+};
 const throttledErrors = new Map();
 const movementMessages = new Map();
 let temporaryInjuryObserver = null;
@@ -270,6 +275,7 @@ function patchPTR() {
   patchConditionTurnEnd();
   patchParalysisHandler();
   patchConditionFromEffects();
+  patchMoveStrikeKeyword();
   installActorSheetSupport();
   registerMovementHooks();
   registerLinkedConditionCleanup();
@@ -579,6 +585,7 @@ function patchActorPrepareDerivedData() {
       if (isEnabled()) {
         applyTemporaryInjuryData(this);
         applyBossEvasionPenalty(this);
+        patchStrikeAttackActions(this);
       }
       return result;
     };
@@ -805,6 +812,315 @@ function syncTemporaryInjurySheetData(data, actor) {
     data.data.health.effectiveInjuries = health.effectiveInjuries;
     data.data.health.nonlethalHits = health.nonlethalHits;
   }
+}
+
+function patchMoveStrikeKeyword() {
+  const MoveClass = CONFIG.PTU?.Item?.documentClasses?.move;
+  if (!MoveClass?.prototype || MoveClass[`${MODULE_ID}StrikePatched`]) return;
+
+  const descriptor = Object.getOwnPropertyDescriptor(MoveClass.prototype, "isFiveStrike");
+  const original = descriptor?.get;
+  if (!(original instanceof Function)) return;
+
+  Object.defineProperty(MoveClass.prototype, "isFiveStrike", {
+    configurable: true,
+    get() {
+      if (isEnabled() && getStrikeKind(this)) return false;
+      return original.call(this);
+    }
+  });
+  MoveClass[`${MODULE_ID}StrikePatched`] = true;
+}
+
+function patchStrikeAttackActions(actor) {
+  const attacks = actor?.system?.attacks;
+  const values = attacks?.values instanceof Function ? Array.from(attacks.values()) : Array.from(attacks ?? []);
+  for (const action of values) {
+    const item = action?.item;
+    if (!item || !getStrikeKind(item)) continue;
+
+    if (action.roll instanceof Function && !action.roll[`${MODULE_ID}StrikeRoll`]) {
+      const original = action.roll;
+      const patched = async function patchedStrikeRoll(params = {}) {
+        const originalCallback = params.callback;
+        const wrappedParams = {
+          ...params,
+          callback: async (rolls, targets, message, event) => {
+            await annotateStrikeAttackMessage(actor, action, rolls, targets, message);
+            if (originalCallback instanceof Function) return originalCallback(rolls, message?.targets ?? targets, message, event);
+            return null;
+          }
+        };
+        return original.call(this, wrappedParams);
+      };
+      patched[`${MODULE_ID}StrikeRoll`] = true;
+      action.roll = patched;
+    }
+
+    if (action.damage instanceof Function && !action.damage[`${MODULE_ID}StrikeDamage`]) {
+      const original = action.damage;
+      const patched = async function patchedStrikeDamage(params = {}) {
+        const adjustment = parseStrikeDamageAdjustment(params.options);
+        if (!adjustment) return original.call(this, params);
+
+        const move = action.item;
+        const originalDamageBase = move.system.damageBase;
+        const adjustedDamageBase = getAdjustedStrikeDamageBase(originalDamageBase, adjustment);
+        if (adjustedDamageBase === null) return original.call(this, params);
+
+        try {
+          foundry.utils.setProperty(move, "system.damageBase", adjustedDamageBase);
+          return await original.call(this, params);
+        } finally {
+          foundry.utils.setProperty(move, "system.damageBase", originalDamageBase);
+        }
+      };
+      patched[`${MODULE_ID}StrikeDamage`] = true;
+      action.damage = patched;
+    }
+  }
+}
+
+async function annotateStrikeAttackMessage(actor, action, rolls, targets, message) {
+  try {
+    if (!isEnabled() || !(message instanceof ChatMessage)) return;
+    const item = action?.item;
+    const kind = getStrikeKind(item);
+    if (!kind) return;
+
+    const context = message.flags?.ptu?.context;
+    const firstRoll = rolls?.[0] ?? message.rolls?.[0];
+    if (!context || !firstRoll) return;
+
+    const strike = await resolveStrikeResults(kind, firstRoll, context.targets ?? targets ?? [], context.outcomes ?? {});
+    if (!strike?.targets?.length) return;
+
+    const options = mergeStrikeOptions(context.options ?? [], strike);
+    const updatedTargets = mergeStrikeTargets(context.targets ?? [], strike);
+    const outcomes = mergeStrikeOutcomes(context.outcomes ?? {}, strike);
+    const firstHitForEffects = strike.targets.some((target) => target.firstHit);
+    const rollResult = firstHitForEffects ? context.rollResult : 0;
+    const content = appendStrikeSummary(message.content, strike);
+
+    await message.update({
+      "flags.ptu.context.options": options,
+      "flags.ptu.context.targets": updatedTargets,
+      "flags.ptu.context.outcomes": outcomes,
+      "flags.ptu.context.rollResult": rollResult,
+      "flags.ptu.context.ptrStatusStrike": strike,
+      content
+    });
+  } catch (error) {
+    warnThrottled("strike-attack", error);
+  }
+}
+
+async function resolveStrikeResults(kind, firstRoll, targets, outcomes) {
+  const config = STRIKE_KINDS[kind];
+  if (!config) return null;
+
+  const modifier = Number(firstRoll.options?.modifierValue ?? firstRoll.options?.totalModifiers ?? 0);
+  const firstNatural = Number(firstRoll.options?.rollResult ?? getD20Result(firstRoll) ?? 0);
+  const targetResults = [];
+
+  for (const target of targets ?? []) {
+    const actorUuid = target.actor;
+    const actorId = actorUuidToId(actorUuid);
+    const dc = Number(target.dc?.value ?? target.dc ?? 0);
+    if (!actorUuid || !Number.isFinite(dc) || dc <= 0) continue;
+    const targetName = await getStrikeTargetName(actorUuid, target.token);
+
+    const firstOutcome = target.outcome ?? outcomes[actorUuid] ?? outcomes[actorId] ?? "miss";
+    const firstHit = isHitOutcome(firstOutcome);
+    const rolls = [{
+      index: 1,
+      natural: firstNatural,
+      total: Number(firstRoll.total ?? firstNatural + modifier),
+      dc,
+      hit: firstHit,
+      outcome: firstOutcome,
+      first: true
+    }];
+
+    if (config.mode === "double") {
+      const second = await rollStrikeAccuracy(modifier, dc, 2);
+      rolls.push(second);
+    } else if (firstHit) {
+      for (let index = 2; index <= config.maxRolls; index++) {
+        const result = await rollStrikeAccuracy(modifier, dc, index);
+        rolls.push(result);
+        if (!result.hit) break;
+      }
+    }
+
+    const hitCount = rolls.filter((roll) => roll.hit).length;
+    const missCount = rolls.length - hitCount;
+    const outcome = getStrikeOutcome(firstOutcome, hitCount);
+    const damage = config.mode === "double"
+      ? { multiplier: hitCount >= 2 ? 2 : 1, bonus: 0 }
+      : { multiplier: 1, bonus: Math.min(Math.max(hitCount - 1, 0) * 2, config.maxBonus) };
+
+    targetResults.push({
+      actor: actorUuid,
+      actorId,
+      name: targetName,
+      token: target.token,
+      dc,
+      firstHit,
+      outcome,
+      hitCount,
+      missCount,
+      damage,
+      rolls
+    });
+  }
+
+  const damage = targetResults.reduce((best, target) => {
+    if (target.damage.multiplier > best.multiplier) return target.damage;
+    if (target.damage.multiplier === best.multiplier && target.damage.bonus > best.bonus) return target.damage;
+    return best;
+  }, { multiplier: 1, bonus: 0 });
+
+  return {
+    kind,
+    label: config.label,
+    damage,
+    targets: targetResults
+  };
+}
+
+async function rollStrikeAccuracy(modifier, dc, index) {
+  const roll = await new Roll("1d20").evaluate();
+  const natural = Number(roll.total ?? 0);
+  const total = natural + modifier;
+  const hit = natural !== 1 && (natural === 20 || total >= dc);
+  return { index, natural, total, dc, hit, outcome: hit ? "hit" : "miss", first: false };
+}
+
+function getStrikeOutcome(firstOutcome, hitCount) {
+  if (hitCount <= 0) return firstOutcome === "crit-miss" ? "crit-miss" : "miss";
+  if (firstOutcome === "crit-hit" || firstOutcome === "blocked-crit") return firstOutcome;
+  return "hit";
+}
+
+function mergeStrikeTargets(targets, strike) {
+  const byActor = new Map(strike.targets.map((target) => [target.actor, target]));
+  return (targets ?? []).map((target) => {
+    const strikeTarget = byActor.get(target.actor);
+    return strikeTarget ? { ...target, outcome: strikeTarget.outcome } : target;
+  });
+}
+
+function mergeStrikeOutcomes(outcomes, strike) {
+  const merged = { ...(outcomes ?? {}) };
+  for (const target of strike.targets) {
+    merged[target.actor] = target.outcome;
+    if (target.actorId) merged[target.actorId] = target.outcome;
+  }
+  return merged;
+}
+
+function mergeStrikeOptions(options, strike) {
+  const clean = normalizeRollOptions(options).filter((option) => !String(option).startsWith("ptr-status:strike:"));
+  clean.push(
+    `ptr-status:strike:kind:${strike.kind}`,
+    `ptr-status:strike:damage-base-bonus:${strike.damage.bonus}`,
+    `ptr-status:strike:damage-base-multiplier:${strike.damage.multiplier}`
+  );
+  return Array.from(new Set(clean)).sort();
+}
+
+function parseStrikeDamageAdjustment(options) {
+  const normalized = normalizeRollOptions(options);
+  const kind = getOptionSuffix(normalized, "ptr-status:strike:kind:");
+  if (!kind) return null;
+  const bonus = Number(getOptionSuffix(normalized, "ptr-status:strike:damage-base-bonus:") ?? 0);
+  const multiplier = Number(getOptionSuffix(normalized, "ptr-status:strike:damage-base-multiplier:") ?? 1);
+  return {
+    kind,
+    bonus: Number.isFinite(bonus) ? bonus : 0,
+    multiplier: Number.isFinite(multiplier) && multiplier > 0 ? multiplier : 1
+  };
+}
+
+function getAdjustedStrikeDamageBase(value, adjustment) {
+  const base = Number(value);
+  if (!Number.isFinite(base) || base <= 0) return null;
+  return Math.max(1, Math.trunc((base * adjustment.multiplier) + adjustment.bonus));
+}
+
+function getOptionSuffix(options, prefix) {
+  const option = options.find((entry) => String(entry).startsWith(prefix));
+  return option ? String(option).slice(prefix.length) : null;
+}
+
+function appendStrikeSummary(content, strike) {
+  if (String(content ?? "").includes("ptr-status-strike-summary")) return content;
+  return `${content ?? ""}${buildStrikeSummaryHtml(strike)}`;
+}
+
+function buildStrikeSummaryHtml(strike) {
+  const damageText = strike.damage.multiplier > 1
+    ? `DB x${strike.damage.multiplier}`
+    : strike.damage.bonus > 0
+      ? `DB +${strike.damage.bonus}`
+      : "DB normal";
+  const rows = strike.targets.map((target) => {
+    const actor = game.actors?.get(target.actorId);
+    const name = escapeHtml(target.name ?? actor?.name ?? target.actorId ?? target.actor);
+    const icons = target.rolls.map((roll) => {
+      const color = roll.hit ? "#15803d" : "#b91c1c";
+      const symbol = roll.hit ? "&#10003;" : "&#10007;";
+      const title = `Roll ${roll.index}: ${roll.total} vs ${roll.dc}${roll.first ? " (first accuracy)" : ""}`;
+      return `<span title="${escapeHtml(title)}" style="display:inline-block;margin-right:3px;color:${color};font-weight:700;font-size:15px;">${symbol}</span>`;
+    }).join("");
+    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px;">
+      <span>${name}</span>
+      <span>${icons}</span>
+      <small>${target.hitCount} hit / ${target.missCount} miss</small>
+    </div>`;
+  }).join("");
+
+  return `<section class="ptr-status-strike-summary" style="margin-top:6px;padding:5px 7px;border:1px solid #999;border-radius:4px;background:#f7f3e8;">
+    <div style="display:flex;justify-content:space-between;gap:8px;"><strong>${escapeHtml(strike.label)}</strong><span>${escapeHtml(damageText)}</span></div>
+    ${rows}
+  </section>`;
+}
+
+async function getStrikeTargetName(actorUuid, tokenUuid) {
+  const actor = await fromUuid(actorUuid).catch(() => null);
+  if (actor?.name) return actor.name;
+  const token = await fromUuid(tokenUuid).catch(() => null);
+  return token?.actor?.name ?? token?.name ?? null;
+}
+
+function getD20Result(roll) {
+  const die = roll?.dice?.find((term) => term instanceof foundry.dice.terms.Die && term.faces === 20);
+  return die?.total ?? null;
+}
+
+function isHitOutcome(outcome) {
+  return outcome === "hit" || outcome === "crit-hit" || outcome === "blocked-crit";
+}
+
+function actorUuidToId(uuid) {
+  return /^Actor\.([A-Za-z0-9]+)$/.exec(String(uuid ?? ""))?.[1] ?? null;
+}
+
+function getStrikeKind(item) {
+  const slugs = getMoveKeywordSlugs(item);
+  const kinds = ["double", "ten", "five"].filter((kind) => slugs.has(`${kind}-strike`));
+  if (!kinds.length) return null;
+  if (kinds.length > 1) warnThrottled(`strike-conflict-${item?.uuid ?? item?.id ?? item?.name}`, new Error(`${item?.name ?? "Move"} has multiple Strike keywords; using ${STRIKE_KINDS[kinds[0]].label}.`));
+  return kinds[0];
+}
+
+function getMoveKeywordSlugs(item) {
+  const values = [
+    ...(Array.isArray(item?.system?.keywords) ? item.system.keywords : []),
+    ...String(item?.system?.range ?? "").split(",")
+  ];
+  return new Set(values.map(sluggify).filter(Boolean));
 }
 
 function patchTemplateRendering() {

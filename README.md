@@ -113,10 +113,23 @@ The module deliberately keeps Mark and Coat source-specific effects flexible. Se
 - With Seeded, end the seeded actor's turn and confirm it loses 1 Tick while the linked source recovers the HP lost.
 - On a Trainer and a Pokemon sheet, open the Combat tab and confirm Temporary Injuries appears below Injuries, caps at 5, and lowers Max HP like normal Injuries without changing the normal Injury field.
 - On a Trainer and a Pokemon sheet, open the Stats tab and confirm Nonlethal Hit appears below Temp HP, saves after editing, and remains visible after closing and reopening the sheet.
+- Roll a Double Strike move. Confirm the attack chat shows one green check per successful Accuracy Roll and one red cross per missed Accuracy Roll. Confirm one hit deals normal DB and two hits double the move's pre-STAB DB. Confirm only the first Accuracy Roll can crit.
+- Roll a Five Strike move. Confirm the first Accuracy Roll is the normal PTR attack roll, extra Accuracy Rolls stop after the first miss, each extra hit adds +2 DB, and the bonus caps at +8 DB.
+- Roll a Ten Strike move. Confirm it follows the same flow as Five Strike with up to 10 total Accuracy Rolls and a DB bonus cap of +16.
 - Run Burned, Poisoned, Badly Poisoned, Bleeding, Seeded, and weather/curse-like persistent damage against a Boss with multiple turns. Confirm loss triggers once per round, not once per boss turn.
 - Start a combatant turn with active managed afflictions. Confirm one compact chat card appears with expandable information and item links.
 
 ## Changelog
+
+### 0.3.11
+
+- Added automation for **Double Strike**, **Five Strike**, and **Ten Strike** move keywords from move keywords or range tags.
+- Replaced PTR's original Five Strike damage-time `1d8` behavior with accuracy-time strike rolls: extra Five/Ten Strike rolls occur after the first hit and stop on the first miss.
+- Double Strike now makes a second Accuracy Roll; one hit deals normal DB and two hits double the move's pre-STAB DB.
+- Five Strike adds +2 DB per extra confirmed hit after the first, capped at +8 DB.
+- Ten Strike adds +2 DB per extra confirmed hit after the first, capped at +16 DB.
+- Attack chat now appends a compact Strike summary with green check marks for confirmed Accuracy Rolls and red crosses for misses.
+- Only the first Accuracy Roll can carry critical-hit/effect trigger data into damage application.
 
 ### 0.3.10
 
