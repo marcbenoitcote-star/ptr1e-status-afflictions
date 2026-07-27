@@ -1106,8 +1106,8 @@ async function resolveStrikeResults(kind, firstRoll, targets, outcomes) {
   const config = STRIKE_KINDS[kind];
   if (!config) return null;
 
-  const modifier = Number(firstRoll.options?.modifierValue ?? firstRoll.options?.totalModifiers ?? 0);
-  const firstNatural = Number(firstRoll.options?.rollResult ?? getD20Result(firstRoll) ?? 0);
+  const firstNatural = getStrikeNaturalResult(firstRoll);
+  const modifier = getStrikeAccuracyModifier(firstRoll, firstNatural);
   const targetResults = [];
 
   for (const target of targets ?? []) {
@@ -1122,7 +1122,8 @@ async function resolveStrikeResults(kind, firstRoll, targets, outcomes) {
     const rolls = [{
       index: 1,
       natural: firstNatural,
-      total: Number(firstRoll.total ?? firstNatural + modifier),
+      modifier,
+      total: getStrikeRollTotal(firstRoll.total, firstNatural, modifier),
       dc,
       hit: firstHit,
       outcome: firstOutcome,
@@ -1179,15 +1180,56 @@ async function resolveStrikeResults(kind, firstRoll, targets, outcomes) {
 async function rollStrikeAccuracy(modifier, dc, index) {
   const roll = await new Roll("1d20").evaluate();
   const natural = Number(roll.total ?? 0);
-  const total = natural + modifier;
-  const hit = natural !== 1 && (natural === 20 || total >= dc);
-  return { index, natural, total, dc, hit, outcome: hit ? "hit" : "miss", first: false };
+  const total = modifier === Infinity ? Infinity : natural + modifier;
+  const hit = modifier === Infinity ? true : natural !== 1 && (natural === 20 || total >= dc);
+  return { index, natural, modifier, total, dc, hit, outcome: hit ? "hit" : "miss", first: false };
 }
 
 function getStrikeOutcome(firstOutcome, hitCount) {
   if (hitCount <= 0) return firstOutcome === "crit-miss" ? "crit-miss" : "miss";
   if (firstOutcome === "crit-hit" || firstOutcome === "blocked-crit") return firstOutcome;
   return "hit";
+}
+
+function getStrikeNaturalResult(roll) {
+  return toFiniteNumber(roll?.options?.rollResult)
+    ?? toFiniteNumber(getD20Result(roll))
+    ?? 0;
+}
+
+function getStrikeAccuracyModifier(roll, natural) {
+  for (const value of [
+    roll?.options?.modifierValue,
+    roll?.options?.totalModifiers,
+    roll?.options?.checkModifier,
+    roll?.options?.modifierPart
+  ]) {
+    const modifier = toModifierNumber(value);
+    if (modifier !== null) return modifier;
+  }
+
+  const total = toModifierNumber(roll?.total);
+  if (total !== null && Number.isFinite(natural)) {
+    if (total === Infinity || total === -Infinity) return total;
+    return total - natural;
+  }
+  return 0;
+}
+
+function getStrikeRollTotal(_total, natural, modifier) {
+  return modifier === Infinity ? Infinity : natural + modifier;
+}
+
+function toFiniteNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function toModifierNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  if (Number.isFinite(number) || number === Infinity || number === -Infinity) return number;
+  return null;
 }
 
 function mergeStrikeTargets(targets, strike) {
@@ -1272,7 +1314,7 @@ function buildStrikeTargetSummaryHtml(target) {
   const icons = target.rolls.map((roll) => {
     const color = roll.hit ? "#15803d" : "#b91c1c";
     const symbol = roll.hit ? "&#10003;" : "&#10007;";
-    const title = `Roll ${roll.index}: ${roll.total} vs ${roll.dc}${roll.first ? " (first accuracy)" : ""}`;
+    const title = `Roll ${roll.index}: ${formatStrikeRollExpression(roll)} vs ${roll.dc}${roll.first ? " (first accuracy)" : ""}`;
     return `<span title="${escapeHtml(title)}" style="display:inline-block;margin-right:3px;color:${color};font-weight:700;font-size:15px;">${symbol}</span>`;
   }).join("");
   return `<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:2px;">
@@ -1289,12 +1331,34 @@ function buildStrikeTargetDetailsHtml(target) {
     const symbol = roll.hit ? "&#10003;" : "&#10007;";
     const color = roll.hit ? "#15803d" : "#b91c1c";
     const suffix = roll.first ? " - first accuracy" : "";
-    return `<li style="margin:1px 0;"><span style="color:${color};font-weight:700;">${symbol}</span> Roll ${roll.index}: ${roll.natural} natural / ${roll.total} total vs ${roll.dc}${suffix}</li>`;
+    return `<li style="margin:1px 0;"><span style="color:${color};font-weight:700;">${symbol}</span> Roll ${roll.index}: ${escapeHtml(formatStrikeRollExpression(roll))} vs ${roll.dc}${suffix}</li>`;
   }).join("");
   return `<div style="margin:3px 0;">
     <strong>${name}</strong>
     <ul style="margin:2px 0 0 1rem;padding:0;">${rolls}</ul>
   </div>`;
+}
+
+function formatStrikeRollExpression(roll) {
+  const modifier = formatSignedModifier(roll.modifier ?? 0);
+  const total = formatStrikeNumber(roll.total);
+  return `${formatStrikeNumber(roll.natural)} ${modifier} = ${total}`;
+}
+
+function formatSignedModifier(value) {
+  const number = Number(value ?? 0);
+  if (number === Infinity) return "+Infinity";
+  if (number === -Infinity) return "-Infinity";
+  if (!Number.isFinite(number)) return "+0";
+  return number >= 0 ? `+${number}` : `${number}`;
+}
+
+function formatStrikeNumber(value) {
+  const number = Number(value);
+  if (number === Infinity) return "Infinity";
+  if (number === -Infinity) return "-Infinity";
+  if (!Number.isFinite(number)) return "?";
+  return String(number);
 }
 
 async function getStrikeTargetName(actorUuid, tokenUuid) {

@@ -145,6 +145,7 @@ The module deliberately keeps Mark and Coat source-specific effects flexible. Se
 - On a Trainer and a Pokemon sheet, open the Stats tab and confirm Nonlethal Hit appears centered below the HP row, does not wrap awkwardly, saves after editing, and remains visible after closing and reopening the sheet.
 - Roll a damaging move with the **Nonlethal** keyword. Confirm Current HP and Temp HP do not decrease, Nonlethal Hit increases by the final applied damage amount, and Fainted is applied when Nonlethal Hit exceeds Current HP.
 - Roll a Double Strike move. Confirm the attack chat shows one green check per successful Accuracy Roll and one red cross per missed Accuracy Roll. Click the Strike summary bar to show/hide each roll result. Confirm one hit deals normal DB and two hits double the move's pre-STAB DB on the Damage Roll. Confirm only the first Accuracy Roll can crit.
+- Add a positive or negative Accuracy modifier, then roll Double/Five/Ten Strike. Confirm every extra Strike roll displays `natural + modifier = total` and uses that total against the target Evasion.
 - Roll a Five Strike move. Confirm the first Accuracy Roll is the normal PTR attack roll, extra Accuracy Rolls stop after the first miss, each extra hit adds +2 DB, and the bonus caps at +8 DB.
 - Roll a Ten Strike move. Confirm it follows the same flow as Five Strike with up to 10 total Accuracy Rolls and a DB bonus cap of +16.
 - Create an Effect item with a Stage Counter rule. Apply it to an Actor and confirm the Effects tab shows the stage in parentheses plus manual +/- controls.
@@ -154,6 +155,11 @@ The module deliberately keeps Mark and Coat source-specific effects flexible. Se
 - Start a combatant turn with active managed afflictions. Confirm one compact chat card appears with expandable information and item links.
 
 ## Changelog
+
+### 0.3.14
+
+- Fixed Double Strike, Five Strike, and Ten Strike extra Accuracy Rolls so they reuse the same final Accuracy modifier as PTR's first Accuracy Roll.
+- Strike detail rows now show `natural + modifier = total` for each roll, making Accuracy bonuses and penalties visible in chat.
 
 ### 0.3.13
 
