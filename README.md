@@ -156,6 +156,14 @@ The module deliberately keeps Mark and Coat source-specific effects flexible. Se
 
 ## Changelog
 
+### 0.3.15
+
+- Added Foundry V14-compatible Dialog handling.
+- Preserved the current official PTR Trainer and Pokémon sheets instead of
+  registering copied templates from an older system release.
+- Kept Temporary Injuries, Nonlethal Hits, Stage Counter, and status controls
+  as dynamic additions to the native sheets.
+
 ### 0.3.14
 
 - Fixed Double Strike, Five Strike, and Ten Strike extra Accuracy Rolls so they reuse the same final Accuracy modifier as PTR's first Accuracy Roll.

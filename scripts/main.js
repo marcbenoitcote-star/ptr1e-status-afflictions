@@ -1,4 +1,5 @@
 const MODULE_ID = "ptr1e-status-afflictions";
+const DialogV1 = foundry.appv1?.api?.Dialog ?? globalThis.Dialog;
 const FLAGS = {
   assignedCombatant: "assignedCombatant",
   processedRound: "processedRound",
@@ -504,7 +505,7 @@ async function promptLinkedActor(targetActor, slug) {
   const content = `<form><div class="form-group"><label>${escapeHtml(prompt)}</label><select name="actor">${choices.map((choice) => `<option value="${escapeHtml(choice.uuid)}">${escapeHtml(choice.name)}</option>`).join("")}</select></div></form>`;
 
   return new Promise((resolve) => {
-    new Dialog({
+    new DialogV1({
       title: conditionLabel(slug),
       content,
       buttons: {
@@ -840,9 +841,7 @@ function ensureModuleConfig() {
 function installActorSheetSupport() {
   ensureModuleConfig();
   if (!CONFIG.PTU?.Actor?.sheetClasses) return false;
-  registerModuleActorSheets();
   patchActorSheets();
-  patchTemplateRendering();
   return true;
 }
 
